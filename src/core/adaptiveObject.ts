@@ -20,6 +20,13 @@ import {
   runningTransactionLevel,
   transact,
 } from "./transaction.js";
+import {
+  addMarkingCallback,
+  addWeakMarkingCallback,
+  onNextMarking,
+  onWeakNextMarking,
+  type IDisposable,
+} from "./callbacks.js";
 
 // ---------------------------------------------------------------------------
 // AfterEvaluateCallbacks — module-level mutable list (F# was [<ThreadStatic>])
@@ -228,6 +235,34 @@ export class AdaptiveObject implements IAdaptiveObject {
   /// evaluation has finished (once).
   static runAfterEvaluate(action: () => void): void {
     AfterEvaluateCallbacks.add(action);
+  }
+
+  // PORT NOTE: F# original adds these as IAdaptiveObject extension
+  // methods in `module CallbackExtensions`. TS has no extension methods
+  // — exposed as instance methods on AdaptiveObject delegating to the
+  // free functions in `./callbacks.js`.
+
+  /// Registers a callback executed whenever the object gets marked
+  /// out-of-date. Does not fire when the object is currently
+  /// out-of-date. Returns a disposable for removing the callback.
+  addMarkingCallback(callback: () => void): IDisposable {
+    return addMarkingCallback(this, callback);
+  }
+
+  /// Same as `addMarkingCallback` but holds the callback weakly.
+  addWeakMarkingCallback(callback: () => void): IDisposable {
+    return addWeakMarkingCallback(this, callback);
+  }
+
+  /// Registers a callback that fires ONCE when the next out-of-date
+  /// marking visits the object.
+  onNextMarking(callback: () => void): IDisposable {
+    return onNextMarking(this, callback);
+  }
+
+  /// Same as `onNextMarking` but holds the callback weakly.
+  onWeakNextMarking(callback: () => void): IDisposable {
+    return onWeakNextMarking(this, callback);
   }
 }
 
