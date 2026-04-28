@@ -53,52 +53,47 @@ describe("[AVal]", () => {
 
   test("map constant", () => {
     const a = AVal.constant(1);
-    const b = AVal.map((x: number) => x, a);
+    const b = a.map((x) => x);
     expect(b.isConstant).toBe(true);
   });
 
-  test("map2 constant", () => {
+  test("map2 constant (via zip)", () => {
     const a = AVal.constant(1);
     const b = AVal.constant(2);
-    const t = AVal.map2((x: number, y: number) => [x, y] as const, a, b);
+    const t = AVal.zip(a, b).map((x, y) => [x, y] as const);
     expect(t.isConstant).toBe(true);
   });
 
-  test("map3 constant", () => {
+  test("map3 constant (via zip)", () => {
     const a = AVal.constant(1);
     const b = AVal.constant(2);
     const c = AVal.constant(3);
-    const t = AVal.map3(
-      (x: number, y: number, z: number) => [x, y, z] as const,
-      a,
-      b,
-      c,
-    );
+    const t = AVal.zip(a, b, c).map((x, y, z) => [x, y, z] as const);
     expect(t.isConstant).toBe(true);
   });
 
   test("bind content", () => {
     // bind from a *constant* input should return the inner aval directly.
     const a = AVal.constant(10);
-    const b = AVal.map((x: string) => x, AVal.init("b"));
-    const c = AVal.map((x: string) => x, AVal.init("c"));
+    const b = AVal.init("b").map((x) => x);
+    const c = AVal.init("c").map((x) => x);
 
-    const t = AVal.bind((va: number) => (va === 10 ? b : c), a);
+    const t = a.bind((va) => (va === 10 ? b : c));
     expect(t).toBe(b);
   });
 
   test("nop change evaluation", () => {
     const input = AVal.init(5);
-    const a = AVal.map((x: number) => x, input);
-    const b = AVal.map((x: number) => -x, input);
-    const c = AVal.map2((x: number, y: number) => x + y, a, b);
+    const a = input.map((x) => x);
+    const b = input.map((x) => -x);
+    const c = AVal.zip(a, b).map((x, y) => x + y);
     let mapCounter = 0;
-    const d = AVal.map((v: number) => {
+    const d = c.map((v) => {
       mapCounter += 1;
       return v;
-    }, c);
+    });
 
-    expect(AVal.force(d)).toBe(0);
+    expect(d.force()).toBe(0);
     expect(mapCounter).toBe(1);
     mapCounter = 0;
 
@@ -106,7 +101,7 @@ describe("[AVal]", () => {
       input.value = 10;
     });
     expect(d.outOfDate).toBe(true);
-    expect(AVal.force(d)).toBe(0);
+    expect(d.force()).toBe(0);
     // d's mapping must NOT have run because c's value didn't change
     // (5 + -5 == 10 + -10 == 0). Cache short-circuit in MapVal.
     expect(mapCounter).toBe(0);
@@ -116,39 +111,31 @@ describe("[AVal]", () => {
     const v = AVal.init(true);
     const a = AVal.constant(0);
     const b = AVal.constant(1);
-    const out = AVal.bind(
-      (flag: boolean) => (flag ? a : b),
-      AVal.mapNonAdaptive(
-        (x: boolean) => x,
-        AVal.map((x: boolean) => x, v),
-      ),
-    );
-    expect(AVal.force(out)).toBe(0);
+    const out = v
+      .map((x) => x)
+      .mapNonAdaptive((x) => x)
+      .bind((flag) => (flag ? a : b));
+    expect(out.force()).toBe(0);
     transact(() => {
       v.value = false;
     });
-    expect(AVal.force(out)).toBe(1);
+    expect(out.force()).toBe(1);
   });
 
   test("multi map non-adaptive and bind", () => {
     const v = AVal.init(true);
     const a = AVal.constant(0);
     const b = AVal.constant(1);
-    const out = AVal.bind(
-      (flag: boolean) => (flag ? a : b),
-      AVal.mapNonAdaptive(
-        (x: boolean) => x,
-        AVal.mapNonAdaptive(
-          (x: boolean) => x,
-          AVal.map((x: boolean) => x, v),
-        ),
-      ),
-    );
-    expect(AVal.force(out)).toBe(0);
+    const out = v
+      .map((x) => x)
+      .mapNonAdaptive((x) => x)
+      .mapNonAdaptive((x) => x)
+      .bind((flag) => (flag ? a : b));
+    expect(out.force()).toBe(0);
     transact(() => {
       v.value = false;
     });
-    expect(AVal.force(out)).toBe(1);
+    expect(out.force()).toBe(1);
   });
 
   // -------------------------------------------------------------------
@@ -186,34 +173,45 @@ describe("[AVal]", () => {
     getValueUntyped(t: AdaptiveToken): unknown {
       return this.getValue(t);
     }
+    map<R>(f: (a: T) => R): aval<R> {
+      return AVal.map(this, f);
+    }
+    bind<R>(f: (a: T) => aval<R>): aval<R> {
+      return AVal.bind(this, f);
+    }
+    mapNonAdaptive<R>(f: (a: T) => R): aval<R> {
+      return AVal.mapNonAdaptive(this, f);
+    }
+    force(): T {
+      return AVal.force(this);
+    }
+    addCallback(action: (v: T) => void) {
+      return AVal.addCallback(this, action);
+    }
+    addWeakCallback(action: (v: T) => void) {
+      return AVal.addWeakCallback(this, action);
+    }
   }
 
   test("eager evaluation", () => {
     const a = AVal.init(0);
     const short = AVal.init("a");
-    const long_ = AVal.map(
-      (x: string) => x,
-      AVal.map((x: string) => x, AVal.map((x: string) => x, AVal.init("a"))),
-    ) as aval<string>;
-    const different = AVal.map(
-      (x: string) => x,
-      AVal.map(
-        (x: string) => x,
-        AVal.map(
-          (x: string) => x,
-          AVal.map((x: string) => x, AVal.map((x: string) => x, AVal.init("b"))),
-        ),
-      ),
-    ) as aval<string>;
+    const long_ = AVal.init("a").map((x) => x).map((x) => x).map((x) => x);
+    const different = AVal.init("b")
+      .map((x) => x)
+      .map((x) => x)
+      .map((x) => x)
+      .map((x) => x)
+      .map((x) => x);
 
-    const dynamic = AVal.bind((l: number) => {
+    const dynamic = a.bind((l) => {
       if (l === 0) return short as aval<string>;
       if (l === 1) return long_;
       return different;
-    }, a);
+    });
 
     const eager = new EagerVal<string>(dynamic) as aval<string>;
-    expect(AVal.force(eager)).toBe("a");
+    expect(eager.force()).toBe("a");
     expect((eager as AdaptiveObject).level).toBe(2);
 
     // makes eager level larger (LevelChangedException) but does not
@@ -222,7 +220,7 @@ describe("[AVal]", () => {
       a.value = 1;
     });
     expect((eager as AdaptiveObject).outOfDate).toBe(false);
-    expect(AVal.force(eager)).toBe("a");
+    expect(eager.force()).toBe("a");
     expect((eager as AdaptiveObject).level).toBeGreaterThan(
       (long_ as unknown as AdaptiveObject).level,
     );
@@ -232,7 +230,7 @@ describe("[AVal]", () => {
       a.value = 2;
     });
     expect((eager as AdaptiveObject).outOfDate).toBe(true);
-    expect(AVal.force(eager)).toBe("b");
+    expect(eager.force()).toBe("b");
     expect((eager as AdaptiveObject).level).toBeGreaterThan(
       (different as unknown as AdaptiveObject).level,
     );
@@ -240,35 +238,35 @@ describe("[AVal]", () => {
 
   test("eager marking", () => {
     const a = AVal.init(0);
-    const mod2 = AVal.map((v: number) => v % 2, a);
+    const mod2 = a.map((v) => v % 2);
     const eager = new EagerVal<number>(mod2) as aval<number>;
-    const out = AVal.map((x: number) => x, eager);
+    const out = eager.map((x) => x);
 
-    expect(AVal.force(out)).toBe(0);
+    expect(out.force()).toBe(0);
 
     transact(() => {
       a.value = 2;
     });
     expect((out as unknown as AdaptiveObject).outOfDate).toBe(false);
-    expect(AVal.force(out)).toBe(0);
+    expect(out.force()).toBe(0);
 
     transact(() => {
       a.value = 1;
     });
     expect((out as unknown as AdaptiveObject).outOfDate).toBe(true);
-    expect(AVal.force(out)).toBe(1);
+    expect(out.force()).toBe(1);
 
     transact(() => {
       a.value = 3;
     });
     expect((out as unknown as AdaptiveObject).outOfDate).toBe(false);
-    expect(AVal.force(out)).toBe(1);
+    expect(out.force()).toBe(1);
 
     transact(() => {
       a.value = 0;
     });
     expect((out as unknown as AdaptiveObject).outOfDate).toBe(true);
-    expect(AVal.force(out)).toBe(0);
+    expect(out.force()).toBe(0);
   });
 
   // -------------------------------------------------------------------
@@ -279,11 +277,8 @@ describe("[AVal]", () => {
   const maybe = typeof gc === "function" ? test : test.skip;
   maybe("mapNonAdaptive GC correct", async () => {
     const v = cval(10);
-    const test = AVal.map(
-      (x: number) => x,
-      AVal.mapNonAdaptive((x: number) => x + 1, v),
-    );
-    expect(AVal.force(test)).toBe(11);
+    const test = v.mapNonAdaptive((x) => x + 1).map((x) => x);
+    expect(test.force()).toBe(11);
 
     for (let i = 0; i < 5; i++) {
       gc!();
@@ -293,7 +288,64 @@ describe("[AVal]", () => {
     transact(() => {
       v.value = 100;
     });
-    expect(AVal.force(test)).toBe(101);
+    expect(test.force()).toBe(101);
+  });
+
+  // -------------------------------------------------------------------
+  // n-ary via zip — these have no F# counterpart (F# uses map2/map3),
+  // they're added to validate the TS variadic inference.
+  // -------------------------------------------------------------------
+
+  test("zip(2).map infers and computes correctly", () => {
+    const x = AVal.init(2);
+    const y = AVal.init(3);
+    const z = AVal.zip(x, y).map((a, b) => a * b);
+    // a: number, b: number inferred from x/y
+    expect(z.force()).toBe(6);
+    transact(() => {
+      x.value = 10;
+    });
+    expect(z.force()).toBe(30);
+  });
+
+  test("zip(3).map infers and computes correctly", () => {
+    const x = AVal.init(1);
+    const y = AVal.init("x");
+    const z = AVal.init(true);
+    const r = AVal.zip(x, y, z).map((a, b, c) => `${a}-${b}-${c}`);
+    // a: number, b: string, c: boolean
+    expect(r.force()).toBe("1-x-true");
+    transact(() => {
+      y.value = "yy";
+      z.value = false;
+    });
+    expect(r.force()).toBe("1-yy-false");
+  });
+
+  test("zip(4).map dispatches to MapNVal and recomputes", () => {
+    const a = AVal.init(1);
+    const b = AVal.init(2);
+    const c = AVal.init(3);
+    const d = AVal.init(4);
+    const sum = AVal.zip(a, b, c, d).map((x, y, z, w) => x + y + z + w);
+    expect(sum.force()).toBe(10);
+    transact(() => {
+      a.value = 10;
+      d.value = 40;
+    });
+    expect(sum.force()).toBe(55);
+  });
+
+  test("zip(2).bind switches inner aval", () => {
+    const flag = AVal.init(true);
+    const a = AVal.init(1);
+    const b = AVal.init(2);
+    const r = AVal.zip(flag, a).bind((f, av) => (f ? a : b).map((x) => x + av));
+    expect(r.force()).toBe(2);
+    transact(() => {
+      flag.value = false;
+    });
+    expect(r.force()).toBe(3);
   });
 
   // -------------------------------------------------------------------

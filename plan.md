@@ -82,11 +82,75 @@ Independent of the runtime port. Can start once the AVal API stabilizes (end of 
 
 These ossify fast; pick early.
 
-- **Module shape**: ESM-only single package. `import { aval, cval, ASet, … } from "adaptive-ts"`.
-- **Combinator surface**: ship both functional (`AVal.map(x, f)`) and method-chained (`x.map(f)`) forms — methods delegate to functions, no extra cost.
-- **Equality**: `===`/`Object.is` internally. No pluggable comparer.
-- **WeakRef strategy**: lazy compaction on access in `WeakOutputSet`, no reliance on `FinalizationRegistry` timing. Add an explicit periodic sweep only if measurements show a problem.
-- **Identity semantics**: `aval`/`cval`/etc. are reference types. Two `aval.map(f)(x)` calls produce *distinct* AVals with the same value. Documented.
+### Greenfield principle
+
+This is a greenfield port. **Do not preserve F# names or patterns when a
+better TS shape exists.** No deprecated aliases, no compatibility shims,
+no "keep for one release just in case." The new shape replaces the old
+one cleanly. Argument order, naming, and arity decomposition all get
+re-thought against TS idioms and TS type-system capabilities, not
+mirrored from F#.
+
+### Module shape
+
+ESM-only single package. `import { aval, cval, ASet, … } from "adaptive-ts"`.
+
+### Combinator surface
+
+**Hybrid: methods for unary, free functions for n-ary, both for
+common operations.**
+
+- **Unary**: `x.map(f)`, `x.bind(f)`, `x.mapNonAdaptive(f)`, `x.force()`.
+  Methods read left-to-right, IDE auto-completes, JS-idiomatic.
+- **N-ary via `zip` wrapper**: `AVal.zip(x, y, z).map((a, b, c) => …)`
+  and `AVal.zip(x, y).bind((a, b) => …)`. Variadic, fully type-inferred
+  via TS variadic tuple types — no `map2`/`map3`/`bind2`/`bind3`
+  surface, no overload soup.
+- **N-ary via free function** as a synonym: `AVal.map(x, y, z, (a, b, c) => …)`.
+  Same dispatch internals as `zip().map()`.
+- **Argument order**: value-first / function-last consistently
+  (`x.map(f)`, `AVal.map(x, f)`). Flipped from F#'s pipe-style
+  function-first order.
+
+**Why no `mapN`/`bindN` numbered variants** (despite F# having them):
+F# had to enumerate them because its tuple types don't carry per-element
+types through transformations. TypeScript variadic tuple types do — so
+a single `map(...)` infers `(a: number, b: string, c: boolean) => R`
+from spread `aval` arguments without overloads. This is one of the few
+places where TS is strictly more expressive than F#. Apply the same
+zip-pattern principle to *any* n-ary operator we encounter in later
+phases (set/map/list combinators with multi-input shapes).
+
+**Internal dispatch**: `map`/`bind` switch on arity. Arity 1/2/3 use
+specialised `MapVal`/`Map2Val`/`Map3Val` (and Bind equivalents) with
+F#-style partial-constant folding. Arity ≥ 4 uses generic
+`MapNVal`/`BindNVal`, which only collapse when *all* inputs are
+constant (skipping partial-constant optimisation at high arity is
+acceptable — high-arity mostly-dynamic is the common case there).
+
+### Currying
+
+Not preserved. F# `(a -> b -> c)` becomes TS `(a: A, b: B) => C`, not
+`(a: A) => (b: B) => C`. F# already un-curries internally via
+`OptimizedClosures.FSharpFunc<...>.Adapt` for performance, so the
+multi-arg form matches what F# actually runs. Users wanting partial
+application write it explicitly.
+
+### Equality
+
+`===` / `Object.is` internally. No pluggable comparer. No
+`DefaultEquality` / `IEqualityComparer<T>` indirection.
+
+### WeakRef strategy
+
+Lazy compaction on access in `WeakOutputSet`, no reliance on
+`FinalizationRegistry` timing. Add an explicit periodic sweep only if
+measurements show a problem.
+
+### Identity semantics
+
+`aval`/`cval`/etc. are reference types. Two `x.map(f)` calls produce
+*distinct* AVals with the same value — documented behaviour, not a bug.
 
 ## Tooling
 

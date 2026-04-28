@@ -8,13 +8,13 @@
 // phase 4 feature — these tests are deferred.
 
 import { describe, expect, test } from "vitest";
-import { AVal, cval } from "../src/adaptiveValue/adaptiveValue.js";
+import { cval } from "../src/adaptiveValue/adaptiveValue.js";
 import { transact } from "../src/core/transaction.js";
 
 describe("[Callbacks]", () => {
   test("[MarkingCallback] fired", () => {
     const m = cval(10);
-    const d = AVal.map((v: number) => v, m);
+    const d = m.map((v) => v);
 
     let fired = 0;
     const callback = () => {
@@ -30,7 +30,7 @@ describe("[Callbacks]", () => {
     try {
       expect(wasFired()).toBe(0);
 
-      AVal.force(d);
+      d.force();
       expect(wasFired()).toBe(0);
 
       transact(() => {
@@ -43,7 +43,7 @@ describe("[Callbacks]", () => {
       });
       expect(wasFired()).toBe(0);
 
-      AVal.force(d);
+      d.force();
       expect(wasFired()).toBe(0);
 
       transact(() => {
@@ -57,7 +57,7 @@ describe("[Callbacks]", () => {
 
   test("[OnNextMarking] fired", () => {
     const m = cval(10);
-    const d = AVal.map((v: number) => v, m);
+    const d = m.map((v) => v);
 
     let fired = 0;
     const callback = () => {
@@ -73,7 +73,7 @@ describe("[Callbacks]", () => {
     try {
       expect(wasFired()).toBe(0);
 
-      AVal.force(d);
+      d.force();
       expect(wasFired()).toBe(0);
 
       transact(() => {
@@ -86,7 +86,7 @@ describe("[Callbacks]", () => {
       });
       expect(wasFired()).toBe(0);
 
-      AVal.force(d);
+      d.force();
       expect(wasFired()).toBe(0);
 
       // OnNextMarking only fires once — no further firings even on

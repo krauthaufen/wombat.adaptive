@@ -5,7 +5,11 @@ import {
   getCurrentBuiltTransaction,
   transact,
 } from "../src/core/transaction.js";
-import { AVal, cval } from "../src/adaptiveValue/adaptiveValue.js";
+import {
+  AVal,
+  cval,
+  type aval,
+} from "../src/adaptiveValue/adaptiveValue.js";
 
 describe("[Transaction]", () => {
   test("transact sets/restores current", () => {
@@ -39,14 +43,8 @@ describe("[Transaction]", () => {
     const a = cval(10);
     const b = cval(5);
 
-    const aMapped = AVal.map(
-      (x: number) => x,
-      AVal.map((x: number) => x, AVal.map((x: number) => x, a)),
-    );
-    const result = AVal.bind(
-      (flag: boolean) => (flag ? b : aMapped),
-      f,
-    );
+    const aMapped = a.map((x) => x).map((x) => x).map((x) => x);
+    const result = f.bind((flag): aval<number> => (flag ? b : aMapped));
 
     let wasrun = false;
     let expected = 5;
@@ -102,14 +100,9 @@ describe("[Transaction]", () => {
   test("[CVal] no transaction change", () => {
     const c = cval(5);
     c.value = 1;
-    AVal.force(c);
+    c.force();
     c.value = 2;
-    // The test passes if no exception was thrown — outside a
-    // transaction, mutating a cval whose Outputs is empty should be
-    // allowed (it just sets the value and marks). With Outputs
-    // populated (after a force-with-caller), it would fail. AVal.force
-    // uses the Top token which has no caller, so Outputs stays empty.
-    expect(AVal.force(c)).toBe(2);
+    expect(c.force()).toBe(2);
   });
 
   // Deferred to later phases (still depend on aset/clist):

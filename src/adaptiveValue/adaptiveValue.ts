@@ -1,32 +1,41 @@
-// Port of FSharp.Data.Adaptive AdaptiveValue/AdaptiveValue.fs
+// Port of FSharp.Data.Adaptive AdaptiveValue/AdaptiveValue.fs +
+// EvaluationCallbackExtensions.fs (the IAdaptiveValue<'T> entries).
+//
+// The public API is reshaped for TypeScript per the design decisions in
+// `plan.md`:
+//   * value-first / function-last argument order (flipped from F#);
+//   * unary combinators exposed as both methods (`x.map(f)`) and free
+//     functions (`AVal.map(x, f)`);
+//   * n-ary combinators handled through a single `AVal.zip(...).map(f)`
+//     / `AVal.zip(...).bind(f)` surface — variadic tuple types in TS
+//     give full inference for any arity, so `map2`/`map3`/`bind2`/
+//     `bind3` are not exposed at all;
+//   * no F# legacy aliases retained.
+//
+// PORT NOTE: F# constant-folding logic (for arity 2/3) is generalised to
+// arity N here — partial constants are forced once and the function is
+// closed over them, with the remaining dynamic inputs dispatched to
+// `MapVal`/`Map2Val`/`Map3Val`/`MapNVal` based on count.
 //
 // PORT NOTE: F#'s `IAdaptiveValueVisitor<'R>` exists to existentialise
-// the generic argument of an `aval<'T>` at runtime — a feat that depends
-// on .NET reified generics. TS erases generics, so the visitor here is
-// purely structural and `Accept` calls just forward `this`. We keep the
-// shape so `cast` can be ported faithfully, but the runtime
-// effectiveness differs (callers cannot recover the original `T`).
+// the generic argument of an `aval<'T>` at runtime — depends on .NET
+// reified generics. TS erases generics, so visitors are structural and
+// `accept` calls just forward `this`. `cast<T>` cannot recover the
+// source type and instead structurally re-types via an identity
+// mapping.
 //
 // PORT NOTE: F# `ContentType` returns `typeof<'T>`. There is no JS
-// runtime equivalent. We do not expose `contentType` in the TS port —
-// every place in the F# original that consumed it depended on .NET
-// reflection (FsCheck generators, etc.) and is out of scope here.
+// equivalent. Not exposed.
 //
-// PORT NOTE: F#'s `cheapEqual` is `ShallowEqualityComparer<'T>.Equals`
-// which is identity for ref types and structural for value types. JS has
-// no value types, so cache short-circuit here uses `Object.is`. This is
-// equivalent for primitives and reference types — the divergence only
-// shows up for structural equality across distinct object instances,
-// which the F# `cheapEqual` would also typically miss for non-struct
-// records.
+// PORT NOTE: F# `cheapEqual` (`ShallowEqualityComparer<'T>.Equals`) is
+// identity for ref types and structural for value types. JS has no
+// value types — cache short-circuit uses `Object.is`. Equivalent for
+// primitives and reference types; structural-on-distinct-instances is
+// not handled (matches F# `ShallowEqualityComparer` behaviour for non-
+// struct records).
 //
-// PORT NOTE: F# `Interlocked.Exchange(&inputDirty, 0)` is a thread-safe
-// read-and-clear. JS single-threaded — replaced with plain
-// read-then-clear.
-//
-// PORT NOTE: F# `OptimizedClosures.FSharpFunc<...>.Adapt` adapts curried
-// functions into uncurried multi-arg form. TS functions accept multiple
-// arguments natively; the wrapper is dropped.
+// PORT NOTE: F# `Interlocked.Exchange(&inputDirty, 0)` thread-safe
+// read-and-clear becomes a plain read-then-clear (single-threaded JS).
 
 import { AdaptiveObject, ConstantObject } from "../core/adaptiveObject.js";
 import { AdaptiveToken } from "../core/adaptiveToken.js";
@@ -43,20 +52,11 @@ import type { IAdaptiveObject } from "../core/types.js";
 // ---------------------------------------------------------------------------
 
 export interface IAdaptiveValue extends IAdaptiveObject {
-  /// Evaluates the AdaptiveValue using the given token and returns the
-  /// current value as `unknown`. Dependencies will be tracked
-  /// automatically when the token is correctly passed to all inner
-  /// evaluation-calls.
   getValueUntyped(token: AdaptiveToken): unknown;
-
-  /// Visits the IAdaptiveValue using the given visitor. PORT NOTE: see
-  /// file header — runtime effectiveness limited compared to F#.
   accept<R>(visitor: IAdaptiveValueVisitor<R>): R;
 }
 
 export interface IAdaptiveValue_<T> extends IAdaptiveValue {
-  /// Evaluates the AdaptiveValue<T> using the given token and returns
-  /// the current value.
   getValue(token: AdaptiveToken): T;
 }
 
@@ -64,8 +64,34 @@ export interface IAdaptiveValueVisitor<R> {
   visit<T>(value: IAdaptiveValue_<T>): R;
 }
 
-/// Type alias matching F# `aval<'T>`.
-export type aval<T> = IAdaptiveValue_<T>;
+/// `aval<T>` — public alias used everywhere. Method-chained surface for
+/// unary combinators is declared on this interface; classes implement
+/// the methods directly.
+export interface aval<T> extends IAdaptiveValue_<T> {
+  /// Adaptively maps the value with `f`. Returns a new aval that
+  /// re-evaluates `f` whenever this value changes.
+  map<R>(f: (a: T) => R): aval<R>;
+
+  /// Adaptively binds the value with `f`. The returned aval depends on
+  /// whichever aval `f` produces for the current value.
+  bind<R>(f: (a: T) => aval<R>): aval<R>;
+
+  /// Maps the value with `f` *without* dirty tracking — the mapping is
+  /// re-applied every time the result is read. Use for cheap
+  /// projections (`unbox`, `fst`, etc.).
+  mapNonAdaptive<R>(f: (a: T) => R): aval<R>;
+
+  /// Reads the current value. Untracked. Should not be called inside
+  /// another adaptive evaluation.
+  force(): T;
+
+  /// Subscribes to value changes. Fires once immediately with the
+  /// current value, then on every subsequent change.
+  addCallback(action: (v: T) => void): IDisposable;
+
+  /// Same as `addCallback` but keeps the callback weakly.
+  addWeakCallback(action: (v: T) => void): IDisposable;
+}
 
 // ---------------------------------------------------------------------------
 // ChangeableValue<T> aka cval<T>
@@ -73,7 +99,7 @@ export type aval<T> = IAdaptiveValue_<T>;
 
 export class ChangeableValue<T>
   extends AdaptiveObject
-  implements IAdaptiveValue_<T>
+  implements aval<T>
 {
   private _value: T;
 
@@ -92,8 +118,8 @@ export class ChangeableValue<T>
     }
   }
 
-  getValue(_token: AdaptiveToken): T {
-    return this.evaluateAlways(_token, () => this._value);
+  getValue(token: AdaptiveToken): T {
+    return this.evaluateAlways(token, () => this._value);
   }
 
   /// Sets the current state of the cval. Returns whether the value
@@ -115,15 +141,35 @@ export class ChangeableValue<T>
     return this.getValue(token);
   }
 
+  // aval<T> methods (delegate to free functions defined below)
+  map<R>(f: (a: T) => R): aval<R> {
+    return map(this, f);
+  }
+  bind<R>(f: (a: T) => aval<R>): aval<R> {
+    return bind(this, f);
+  }
+  mapNonAdaptive<R>(f: (a: T) => R): aval<R> {
+    return mapNonAdaptive(this, f);
+  }
+  force(): T {
+    return force(this);
+  }
+  addCallback(action: (v: T) => void): IDisposable {
+    return addCallback(this, action);
+  }
+  addWeakCallback(action: (v: T) => void): IDisposable {
+    return addWeakCallback(this, action);
+  }
+
   override toString(): string {
     return `cval(${String(this._value)})`;
   }
 }
 
-/// Alias matching F# `cval<'T>`.
+/// Type alias matching F# `cval<'T>`.
 export type cval<T> = ChangeableValue<T>;
 
-/// Convenience constructor matching the F# `cval value` syntax.
+/// Convenience constructor — `cval(0)` produces a `ChangeableValue<number>`.
 export function cval<T>(value: T): ChangeableValue<T> {
   return new ChangeableValue<T>(value);
 }
@@ -134,7 +180,7 @@ export function cval<T>(value: T): ChangeableValue<T> {
 
 export abstract class AbstractVal<T>
   extends AdaptiveObject
-  implements IAdaptiveValue_<T>
+  implements aval<T>
 {
   private _valueCache: T | undefined = undefined;
 
@@ -147,8 +193,6 @@ export abstract class AbstractVal<T>
         this._valueCache = v;
         return v;
       }
-      // Cast: when `outOfDate` is false, `_valueCache` has been set at
-      // least once. (It's never read before the first compute.)
       return this._valueCache as T;
     });
   }
@@ -158,6 +202,25 @@ export abstract class AbstractVal<T>
   }
   getValueUntyped(token: AdaptiveToken): unknown {
     return this.getValue(token);
+  }
+
+  map<R>(f: (a: T) => R): aval<R> {
+    return map(this, f);
+  }
+  bind<R>(f: (a: T) => aval<R>): aval<R> {
+    return bind(this, f);
+  }
+  mapNonAdaptive<R>(f: (a: T) => R): aval<R> {
+    return mapNonAdaptive(this, f);
+  }
+  force(): T {
+    return force(this);
+  }
+  addCallback(action: (v: T) => void): IDisposable {
+    return addCallback(this, action);
+  }
+  addWeakCallback(action: (v: T) => void): IDisposable {
+    return addWeakCallback(this, action);
   }
 
   override toString(): string {
@@ -185,11 +248,33 @@ class MapNonAdaptiveVal<A, B> extends DecoratorObject implements aval<B> {
   }
 
   getValueUntyped(t: AdaptiveToken): unknown {
-    return this.evaluateAlways(t, (tok) => this.mapping(this.input.getValue(tok)));
+    return this.evaluateAlways(t, (tok) =>
+      this.mapping(this.input.getValue(tok)),
+    );
   }
 
   getValue(t: AdaptiveToken): B {
     return this.evaluateAlways(t, (tok) => this.mapping(this.input.getValue(tok)));
+  }
+
+  // aval<T> methods
+  map<R>(f: (a: B) => R): aval<R> {
+    return map(this, f);
+  }
+  bind<R>(f: (a: B) => aval<R>): aval<R> {
+    return bind(this, f);
+  }
+  mapNonAdaptive<R>(f: (a: B) => R): aval<R> {
+    return mapNonAdaptive(this, f);
+  }
+  force(): B {
+    return force(this);
+  }
+  addCallback(action: (v: B) => void): IDisposable {
+    return addCallback(this, action);
+  }
+  addWeakCallback(action: (v: B) => void): IDisposable {
+    return addWeakCallback(this, action);
   }
 
   override toString(): string {
@@ -216,8 +301,7 @@ function lazyOrValueFromCreate<T>(create: () => T): LazyOrValue<T> {
   return { create, value: undefined, isValue: false };
 }
 
-/// A constant value that can either be a value or a lazy computation.
-class ConstantVal<T> extends ConstantObject implements IAdaptiveValue_<T> {
+class ConstantVal<T> extends ConstantObject implements aval<T> {
   private _data: LazyOrValue<T>;
 
   private constructor(data: LazyOrValue<T>) {
@@ -243,12 +327,32 @@ class ConstantVal<T> extends ConstantObject implements IAdaptiveValue_<T> {
     return this.getValue(token);
   }
 
+  // aval<T> methods
+  map<R>(f: (a: T) => R): aval<R> {
+    return map(this, f);
+  }
+  bind<R>(f: (a: T) => aval<R>): aval<R> {
+    return bind(this, f);
+  }
+  mapNonAdaptive<R>(f: (a: T) => R): aval<R> {
+    return mapNonAdaptive(this, f);
+  }
+  force(): T {
+    return force(this);
+  }
+  addCallback(_action: (v: T) => void): IDisposable {
+    return addCallback(this, _action);
+  }
+  addWeakCallback(_action: (v: T) => void): IDisposable {
+    return addWeakCallback(this, _action);
+  }
+
   static lazy<T>(create: () => T): aval<T> {
     return new ConstantVal<T>(lazyOrValueFromCreate(create));
   }
-  // PORT NOTE: F# named this `Value`. The TS name `valueOf` collides
-  // with `Object.prototype.valueOf` (compiler complains about implicit
-  // override). Renamed to `of` to avoid the conflict.
+  // PORT NOTE: F# named this `Value`. The TS name `valueOf` would
+  // collide with `Object.prototype.valueOf` under `noImplicitOverride`.
+  // Renamed to `of` to avoid the conflict.
   static of<T>(value: T): aval<T> {
     return new ConstantVal<T>(lazyOrValueFromValue(value));
   }
@@ -257,12 +361,11 @@ class ConstantVal<T> extends ConstantObject implements IAdaptiveValue_<T> {
     return `constval(${String(this.getCached())})`;
   }
 
-  // PORT NOTE: F# overrides `GetHashCode`/`Equals` so that two
-  // ConstantVals with equal contained values are considered equal. JS
-  // `===` is identity for objects; we cannot override `==` for arbitrary
-  // objects. The `[AVal] constant equality` test in the F# suite relies
-  // on this — we provide a public `equals` method as the documented way
-  // to compare ConstantVals; the test is rewritten to use it.
+  // PORT NOTE: F# overrode `Equals`/`GetHashCode` so two ConstantVals
+  // with equal contained values are considered equal. JS `===` is
+  // identity-only — exposed as a `equals` method instead. The
+  // `constantEquals` helper at the bottom of this file is the
+  // documented way to compare constants.
   equals(other: unknown): boolean {
     if (other instanceof ConstantVal) {
       return Object.is(this.getCached(), other.getCached());
@@ -275,11 +378,6 @@ class ConstantVal<T> extends ConstantObject implements IAdaptiveValue_<T> {
 // Caster<A, B> — casts an aval<A> to aval<B>
 // ---------------------------------------------------------------------------
 
-// PORT NOTE: F# uses `typeof<'a>.IsAssignableFrom typeof<'b>` to check
-// the cast at instantiation time. TS erases generics; we must trust the
-// caller. The cast here is structural: just an identity-typed function.
-// If the runtime value is incompatible with B, the failure surfaces
-// later when `B`-typed operations run on it.
 function casterLambda<A, B>(): (a: A) => B {
   return (a) => a as unknown as B;
 }
@@ -291,9 +389,7 @@ function casterLambda<A, B>(): (a: A) => B {
 class MapVal<T1, T2> extends AbstractVal<T2> {
   private readonly _mapping: (a: T1) => T2;
   private readonly _input: aval<T1>;
-  private _cache:
-    | { input: T1; output: T2 }
-    | undefined = undefined;
+  private _cache: { input: T1; output: T2 } | undefined = undefined;
 
   constructor(mapping: (a: T1) => T2, input: aval<T1>) {
     super();
@@ -320,9 +416,7 @@ class Map2Val<T1, T2, T3> extends AbstractVal<T3> {
   private readonly _mapping: (a: T1, b: T2) => T3;
   private readonly _a: aval<T1>;
   private readonly _b: aval<T2>;
-  private _cache:
-    | { a: T1; b: T2; out: T3 }
-    | undefined = undefined;
+  private _cache: { a: T1; b: T2; out: T3 } | undefined = undefined;
 
   constructor(mapping: (a: T1, b: T2) => T3, a: aval<T1>, b: aval<T2>) {
     super();
@@ -388,6 +482,39 @@ class Map3Val<T1, T2, T3, T4> extends AbstractVal<T4> {
     const d = this._mapping(a, b, c);
     this._cache = { a, b, c, out: d };
     return d;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MapNVal — generic n-ary map for arity ≥ 4
+// ---------------------------------------------------------------------------
+
+class MapNVal<R> extends AbstractVal<R> {
+  private readonly _inputs: aval<unknown>[];
+  private readonly _mapping: (...vs: unknown[]) => R;
+  private _cache: { inputs: unknown[]; output: R } | undefined = undefined;
+
+  constructor(inputs: aval<unknown>[], mapping: (...vs: unknown[]) => R) {
+    super();
+    this._inputs = inputs;
+    this._mapping = mapping;
+  }
+
+  override compute(token: AdaptiveToken): R {
+    const current = this._inputs.map((v) => v.getValue(token));
+    if (this._cache !== undefined && this._cache.inputs.length === current.length) {
+      let allSame = true;
+      for (let i = 0; i < current.length; i++) {
+        if (!Object.is(this._cache.inputs[i], current[i])) {
+          allSame = false;
+          break;
+        }
+      }
+      if (allSame) return this._cache.output;
+    }
+    const out = this._mapping(...current);
+    this._cache = { inputs: current, output: out };
+    return out;
   }
 }
 
@@ -548,6 +675,66 @@ class Bind3Val<T1, T2, T3, T4> extends AbstractVal<T4> {
 }
 
 // ---------------------------------------------------------------------------
+// BindNVal — generic n-ary bind for arity ≥ 4
+// ---------------------------------------------------------------------------
+
+class BindNVal<R> extends AbstractVal<R> {
+  private readonly _inputs: aval<unknown>[];
+  private readonly _mapping: (...vs: unknown[]) => aval<R>;
+  private _inner:
+    | { inputs: unknown[]; result: aval<R> }
+    | undefined = undefined;
+  private _inputDirty = 1;
+
+  constructor(
+    inputs: aval<unknown>[],
+    mapping: (...vs: unknown[]) => aval<R>,
+  ) {
+    super();
+    this._inputs = inputs;
+    this._mapping = mapping;
+  }
+
+  override inputChanged(_t: unknown, o: IAdaptiveObject): void {
+    for (let i = 0; i < this._inputs.length; i++) {
+      if (this._inputs[i] === o) {
+        this._inputDirty = 1;
+        return;
+      }
+    }
+  }
+
+  override compute(token: AdaptiveToken): R {
+    const vals = this._inputs.map((v) => v.getValue(token));
+    const wasDirty = this._inputDirty !== 0;
+    this._inputDirty = 0;
+
+    if (this._inner === undefined) {
+      const result = this._mapping(...vals);
+      this._inner = { inputs: vals, result };
+      return result.getValue(token);
+    }
+
+    let allSame = true;
+    for (let i = 0; i < vals.length; i++) {
+      if (!Object.is(this._inner.inputs[i], vals[i])) {
+        allSame = false;
+        break;
+      }
+    }
+
+    if (!wasDirty || allSame) {
+      return this._inner.result.getValue(token);
+    }
+
+    this._inner.result.outputs.remove(this);
+    const result = this._mapping(...vals);
+    this._inner = { inputs: vals, result };
+    return result.getValue(token);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // CustomVal<T>
 // ---------------------------------------------------------------------------
 
@@ -563,63 +750,171 @@ class CustomVal<T> extends AbstractVal<T> {
 }
 
 // ---------------------------------------------------------------------------
-// AVal module functions
+// Internal n-ary dispatchers — generalise F# arity-2/3 partial-constant
+// folding to arity N.
 // ---------------------------------------------------------------------------
 
-/// Evaluates the given adaptive value and returns its current value.
-/// Should not be used inside the adaptive evaluation of other
-/// AdaptiveObjects since it does not track dependencies.
+function partitionConstants(
+  vals: ReadonlyArray<aval<unknown>>,
+): {
+  allConstant: boolean;
+  constantValues: unknown[];
+  dynamicVals: aval<unknown>[];
+  dynamicIndices: number[];
+} {
+  const constantValues: unknown[] = new Array(vals.length).fill(undefined);
+  const dynamicVals: aval<unknown>[] = [];
+  const dynamicIndices: number[] = [];
+  let allConstant = true;
+  for (let i = 0; i < vals.length; i++) {
+    const v = vals[i]!;
+    if (v.isConstant) {
+      constantValues[i] = force(v);
+    } else {
+      allConstant = false;
+      dynamicVals.push(v);
+      dynamicIndices.push(i);
+    }
+  }
+  return { allConstant, constantValues, dynamicVals, dynamicIndices };
+}
+
+function closeOverConstants<R>(
+  arity: number,
+  constantValues: unknown[],
+  dynamicIndices: number[],
+  f: (...vs: unknown[]) => R,
+): (...vs: unknown[]) => R {
+  if (dynamicIndices.length === arity) return f; // nothing to close over
+  return (...dynVs: unknown[]) => {
+    const args = constantValues.slice();
+    for (let i = 0; i < dynamicIndices.length; i++) {
+      args[dynamicIndices[i]!] = dynVs[i];
+    }
+    return f(...args);
+  };
+}
+
+function mapInternal<R>(
+  vals: ReadonlyArray<aval<unknown>>,
+  f: (...vs: unknown[]) => R,
+): aval<R> {
+  if (vals.length === 0) return ConstantVal.lazy(() => f());
+
+  const { allConstant, constantValues, dynamicVals, dynamicIndices } =
+    partitionConstants(vals);
+
+  if (allConstant) {
+    return ConstantVal.lazy(() => f(...constantValues));
+  }
+
+  const wrapped = closeOverConstants(vals.length, constantValues, dynamicIndices, f);
+
+  switch (dynamicVals.length) {
+    case 1:
+      return new MapVal<unknown, R>(
+        (a) => wrapped(a),
+        dynamicVals[0]!,
+      );
+    case 2:
+      return new Map2Val<unknown, unknown, R>(
+        (a, b) => wrapped(a, b),
+        dynamicVals[0]!,
+        dynamicVals[1]!,
+      );
+    case 3:
+      return new Map3Val<unknown, unknown, unknown, R>(
+        (a, b, c) => wrapped(a, b, c),
+        dynamicVals[0]!,
+        dynamicVals[1]!,
+        dynamicVals[2]!,
+      );
+    default:
+      return new MapNVal<R>(dynamicVals, wrapped);
+  }
+}
+
+function bindInternal<R>(
+  vals: ReadonlyArray<aval<unknown>>,
+  f: (...vs: unknown[]) => aval<R>,
+): aval<R> {
+  if (vals.length === 0) return f();
+
+  const { allConstant, constantValues, dynamicVals, dynamicIndices } =
+    partitionConstants(vals);
+
+  if (allConstant) {
+    return f(...constantValues);
+  }
+
+  const wrapped = closeOverConstants(vals.length, constantValues, dynamicIndices, f);
+
+  switch (dynamicVals.length) {
+    case 1:
+      return new BindVal<unknown, R>(
+        (a) => wrapped(a),
+        dynamicVals[0]!,
+      );
+    case 2:
+      return new Bind2Val<unknown, unknown, R>(
+        (a, b) => wrapped(a, b),
+        dynamicVals[0]!,
+        dynamicVals[1]!,
+      );
+    case 3:
+      return new Bind3Val<unknown, unknown, unknown, R>(
+        (a, b, c) => wrapped(a, b, c),
+        dynamicVals[0]!,
+        dynamicVals[1]!,
+        dynamicVals[2]!,
+      );
+    default:
+      return new BindNVal<R>(dynamicVals, wrapped);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public unary combinators (free-function form)
+// ---------------------------------------------------------------------------
+
 export function force<T>(value: aval<T>): T {
   return value.getValue(AdaptiveToken.top);
 }
 
-/// Creates a changeable adaptive value initially holding the given value.
 export function init<T>(value: T): cval<T> {
   return new ChangeableValue<T>(value);
 }
 
-/// Creates a constant adaptive value always holding the given value.
 export function constant<T>(value: T): aval<T> {
   return ConstantVal.of(value);
 }
 
-/// Creates a constant adaptive value using the given create function.
 export function delay<T>(create: () => T): aval<T> {
   return ConstantVal.lazy(create);
 }
 
-/// Returns a new adaptive value that adaptively applies the mapping
-/// function to the given adaptive input.
-export function map<T1, T2>(
-  mapping: (a: T1) => T2,
-  value: aval<T1>,
-): aval<T2> {
-  if (value.isConstant) {
-    return ConstantVal.lazy(() => mapping(force(value)));
-  }
-  return new MapVal<T1, T2>(mapping, value);
+export function map<T, R>(value: aval<T>, f: (a: T) => R): aval<R> {
+  return mapInternal([value], (v) => f(v as T));
 }
 
-/// Returns a new adaptive value that applies the mapping function
-/// whenever a value is demanded. Useful for very cheap mapping
-/// functions. WARNING: the mapping is also called for unchanged inputs.
-export function mapNonAdaptive<T1, T2>(
-  mapping: (a: T1) => T2,
-  value: aval<T1>,
-): aval<T2> {
-  if (value.isConstant) {
-    return ConstantVal.lazy(() => mapping(force(value)));
-  }
-  return new MapNonAdaptiveVal<T1, T2>(mapping, value);
+export function bind<T, R>(
+  value: aval<T>,
+  f: (a: T) => aval<R>,
+): aval<R> {
+  return bindInternal([value], (v) => f(v as T));
 }
 
-/// Casts the given adaptive value to the specified type. PORT NOTE:
-/// see file header — this is a structural cast at runtime.
+export function mapNonAdaptive<T, R>(
+  value: aval<T>,
+  f: (a: T) => R,
+): aval<R> {
+  if (value.isConstant) {
+    return ConstantVal.lazy(() => f(force(value)));
+  }
+  return new MapNonAdaptiveVal<T, R>(f, value);
+}
+
 export function cast<T>(value: IAdaptiveValue): aval<T> {
-  // F# version inspects via `Accept` to recover the source type
-  // parameter. TS can't recover types, so we accept any aval and cast
-  // through. If `value` is already an `aval<T>` (it usually is), the
-  // returned value is identical.
   if (typeof (value as aval<T>).getValue === "function") {
     if ((value as IAdaptiveValue).isConstant) {
       return ConstantVal.lazy(() =>
@@ -636,165 +931,75 @@ export function cast<T>(value: IAdaptiveValue): aval<T> {
   throw new Error("[adaptive-ts] cast target does not implement getValue");
 }
 
-export function map2<T1, T2, T3>(
-  mapping: (a: T1, b: T2) => T3,
-  value1: aval<T1>,
-  value2: aval<T2>,
-): aval<T3> {
-  if (value1.isConstant && value2.isConstant) {
-    return ConstantVal.lazy(() => mapping(force(value1), force(value2)));
-  }
-  if (value1.isConstant) {
-    const a = force(value1);
-    return map((b: T2) => mapping(a, b), value2);
-  }
-  if (value2.isConstant) {
-    const b = force(value2);
-    return map((a: T1) => mapping(a, b), value1);
-  }
-  return new Map2Val<T1, T2, T3>(mapping, value1, value2);
-}
-
-export function map3<T1, T2, T3, T4>(
-  mapping: (a: T1, b: T2, c: T3) => T4,
-  value1: aval<T1>,
-  value2: aval<T2>,
-  value3: aval<T3>,
-): aval<T4> {
-  if (value1.isConstant && value2.isConstant && value3.isConstant) {
-    return ConstantVal.lazy(() =>
-      mapping(force(value1), force(value2), force(value3)),
-    );
-  }
-  if (value1.isConstant) {
-    const a = force(value1);
-    return map2((b: T2, c: T3) => mapping(a, b, c), value2, value3);
-  }
-  if (value2.isConstant) {
-    const b = force(value2);
-    return map2((a: T1, c: T3) => mapping(a, b, c), value1, value3);
-  }
-  if (value3.isConstant) {
-    const c = force(value3);
-    return map2((a: T1, b: T2) => mapping(a, b, c), value1, value2);
-  }
-  return new Map3Val<T1, T2, T3, T4>(mapping, value1, value2, value3);
-}
-
-export function bind<T1, T2>(
-  mapping: (a: T1) => aval<T2>,
-  value: aval<T1>,
-): aval<T2> {
-  if (value.isConstant) {
-    return mapping(force(value));
-  }
-  return new BindVal<T1, T2>(mapping, value);
-}
-
-export function bind2<T1, T2, T3>(
-  mapping: (a: T1, b: T2) => aval<T3>,
-  value1: aval<T1>,
-  value2: aval<T2>,
-): aval<T3> {
-  if (value1.isConstant && value2.isConstant) {
-    return mapping(force(value1), force(value2));
-  }
-  if (value1.isConstant) {
-    const a = force(value1);
-    return bind((b: T2) => mapping(a, b), value2);
-  }
-  if (value2.isConstant) {
-    const b = force(value2);
-    return bind((a: T1) => mapping(a, b), value1);
-  }
-  return new Bind2Val<T1, T2, T3>(mapping, value1, value2);
-}
-
-export function bind3<T1, T2, T3, T4>(
-  mapping: (a: T1, b: T2, c: T3) => aval<T4>,
-  value1: aval<T1>,
-  value2: aval<T2>,
-  value3: aval<T3>,
-): aval<T4> {
-  if (value1.isConstant && value2.isConstant && value3.isConstant) {
-    return mapping(force(value1), force(value2), force(value3));
-  }
-  if (value1.isConstant) {
-    const a = force(value1);
-    return bind2((b: T2, c: T3) => mapping(a, b, c), value2, value3);
-  }
-  if (value2.isConstant) {
-    const b = force(value2);
-    return bind2((a: T1, c: T3) => mapping(a, b, c), value1, value3);
-  }
-  if (value3.isConstant) {
-    const c = force(value3);
-    return bind2((a: T1, b: T2) => mapping(a, b, c), value1, value2);
-  }
-  return new Bind3Val<T1, T2, T3, T4>(mapping, value1, value2, value3);
-}
-
-/// Creates a custom adaptive value using the given computation. Callers
-/// are responsible for removing inputs that are no longer needed.
 export function custom<T>(compute: (token: AdaptiveToken) => T): aval<T> {
   return new CustomVal<T>(compute);
 }
 
-/// Convenience namespace mirroring the F# `AVal` module surface.
-export const AVal = {
-  force,
-  init,
-  constant,
-  delay,
-  map,
-  mapNonAdaptive,
-  cast,
-  map2,
-  map3,
-  bind,
-  bind2,
-  bind3,
-  custom,
+// ---------------------------------------------------------------------------
+// N-ary combinators — `zip` wrapper
+// ---------------------------------------------------------------------------
+
+/// Maps a tuple of avals' element types out of the tuple shape.
+///   AValValues<[aval<A>, aval<B>]>  =  [A, B]
+type AValValues<T extends ReadonlyArray<aval<unknown>>> = {
+  [K in keyof T]: T[K] extends aval<infer U> ? U : never;
 };
 
-// ---------------------------------------------------------------------------
-// Equality helper for ConstantVal (see PORT NOTE above)
-// ---------------------------------------------------------------------------
-
-export function constantEquals<T>(a: aval<T>, b: aval<T>): boolean {
-  if (a instanceof ConstantVal && b instanceof ConstantVal) {
-    return a.equals(b);
+/// Wrapper produced by `zip(...vals)`. Carries the value-type tuple as
+/// a phantom so `.map`/`.bind` callbacks are precisely typed.
+export class Zipped<Ts extends readonly unknown[]> {
+  private readonly _avals: ReadonlyArray<aval<unknown>>;
+  constructor(avals: ReadonlyArray<aval<unknown>>) {
+    this._avals = avals;
   }
-  return a === b;
+
+  /// Adaptively maps the tuple of values with `f`. The callback's
+  /// argument types match the value-type tuple.
+  map<R>(f: (...vs: Ts) => R): aval<R> {
+    return mapInternal(
+      this._avals,
+      f as unknown as (...vs: unknown[]) => R,
+    );
+  }
+
+  /// Adaptively binds the tuple of values with `f`. The callback returns
+  /// an `aval<R>` whose latest value the resulting aval reflects.
+  bind<R>(f: (...vs: Ts) => aval<R>): aval<R> {
+    return bindInternal(
+      this._avals,
+      f as unknown as (...vs: unknown[]) => aval<R>,
+    );
+  }
+}
+
+/// Combines any number of avals into a `Zipped` wrapper carrying their
+/// value-type tuple. Used as the entry point for n-ary adaptive
+/// combinators: `zip(x, y, z).map((a, b, c) => …)`.
+export function zip<T extends readonly aval<unknown>[]>(
+  ...vals: T
+): Zipped<AValValues<T>> {
+  return new Zipped<AValValues<T>>(vals);
 }
 
 // ---------------------------------------------------------------------------
-// EvaluationCallbackExtensions — port of EvaluationCallbackExtensions.fs
-// (the IAdaptiveValue<'T> entries; IOpReader entries belong to phase 4).
+// EvaluationCallbackExtensions — IAdaptiveValue<'T> entries.
+// (IOpReader entries belong to phase 4.)
 // ---------------------------------------------------------------------------
-
-// PORT NOTE: F# adds these via interface extension members. TS has no
-// extension methods — exposed as free functions taking `aval<T>` plus a
-// thin instance-method delegate added to AbstractVal and
-// ChangeableValue for ergonomic parity with the F# `value.AddCallback`
-// call sites. ConstantVal is intentionally excluded (its value never
-// changes).
 
 function addCallbackInternal<T>(
   value: aval<T>,
   weak: boolean,
   action: (v: T) => void,
 ): IDisposable {
-  const last: { v: T } | null[] = [null] as unknown as { v: T } | null[];
-  let lastBox: { v: T } | null = null;
+  let last: { v: T } | null = null;
 
   const onMark = () => {
     const t = getRunningTransaction();
     if (t === null) return;
     t.addFinalizer(() => {
       const v = force(value);
-      if (lastBox !== null && Object.is(lastBox.v, v)) return;
-      lastBox = { v };
+      if (last !== null && Object.is(last.v, v)) return;
+      last = { v };
       action(v);
     });
   };
@@ -808,22 +1013,18 @@ function addCallbackInternal<T>(
   if (t0 !== null) {
     t0.addFinalizer(() => {
       const v = force(value);
-      lastBox = { v };
+      last = { v };
       action(v);
     });
   } else {
     const v = force(value);
-    lastBox = { v };
+    last = { v };
     action(v);
   }
 
   return sub;
 }
 
-/// Adds a disposable callback to the aval that will be executed
-/// whenever the aval's value changed. Fires once immediately with the
-/// current value (or via the running transaction's finalizers if
-/// invoked inside a transaction).
 export function addCallback<T>(
   value: aval<T>,
   action: (v: T) => void,
@@ -831,7 +1032,6 @@ export function addCallback<T>(
   return addCallbackInternal(value, false, action);
 }
 
-/// Same as `addCallback` but holds the callback weakly.
 export function addWeakCallback<T>(
   value: aval<T>,
   action: (v: T) => void,
@@ -839,40 +1039,32 @@ export function addWeakCallback<T>(
   return addCallbackInternal(value, true, action);
 }
 
-// Instance-method delegates for ChangeableValue and AbstractVal so call
-// sites can write `value.addCallback(action)` matching the F# style.
-declare module "./adaptiveValue.js" {
-  interface ChangeableValue<T> {
-    addCallback(action: (v: T) => void): IDisposable;
-    addWeakCallback(action: (v: T) => void): IDisposable;
+// ---------------------------------------------------------------------------
+// Equality helper for ConstantVal (see PORT NOTE above)
+// ---------------------------------------------------------------------------
+
+export function constantEquals<T>(a: aval<T>, b: aval<T>): boolean {
+  if (a instanceof ConstantVal && b instanceof ConstantVal) {
+    return a.equals(b);
   }
-  interface AbstractVal<T> {
-    addCallback(action: (v: T) => void): IDisposable;
-    addWeakCallback(action: (v: T) => void): IDisposable;
-  }
+  return a === b;
 }
 
-ChangeableValue.prototype.addCallback = function <T>(
-  this: ChangeableValue<T>,
-  action: (v: T) => void,
-): IDisposable {
-  return addCallback(this, action);
-};
-ChangeableValue.prototype.addWeakCallback = function <T>(
-  this: ChangeableValue<T>,
-  action: (v: T) => void,
-): IDisposable {
-  return addWeakCallback(this, action);
-};
-AbstractVal.prototype.addCallback = function <T>(
-  this: AbstractVal<T>,
-  action: (v: T) => void,
-): IDisposable {
-  return addCallback(this, action);
-};
-AbstractVal.prototype.addWeakCallback = function <T>(
-  this: AbstractVal<T>,
-  action: (v: T) => void,
-): IDisposable {
-  return addWeakCallback(this, action);
+// ---------------------------------------------------------------------------
+// Public namespace surface
+// ---------------------------------------------------------------------------
+
+export const AVal = {
+  force,
+  init,
+  constant,
+  delay,
+  custom,
+  cast,
+  map,
+  bind,
+  mapNonAdaptive,
+  zip,
+  addCallback,
+  addWeakCallback,
 };
