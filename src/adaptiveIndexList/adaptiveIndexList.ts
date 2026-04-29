@@ -143,6 +143,74 @@ function ofReaderInternal<T>(
 // Readers
 // ---------------------------------------------------------------------------
 
+/**
+ * Reader for `init` (`alist<T>` of length `aval<number>` with element
+ * `(i: number) => T`).
+ */
+class InitReader<T> extends AbstractReader<IndexListDelta<T>> {
+  private readonly _input: aval<number>;
+  private readonly _mapping: (i: number) => T;
+  private _lastLength = 0;
+  // Track allocated indices in insertion order so we can pop the last
+  // on a length decrease.
+  private _idxs: IndexList<true> = IndexList.empty<true>();
+  constructor(input: aval<number>, mapping: (i: number) => T) {
+    super(IndexListDelta.empty<T>());
+    this._input = input;
+    this._mapping = mapping;
+  }
+  override compute(tok: AdaptiveToken): IndexListDelta<T> {
+    const newLength = Math.max(0, this._input.getValue(tok) | 0);
+    let delta = IndexListDelta.empty<T>();
+    // length increase
+    for (let i = this._lastLength; i < newLength; i++) {
+      this._idxs = this._idxs.add(true);
+      const idx = this._idxs.maxIndex;
+      delta = delta.add(idx, ElementSet(this._mapping(i)));
+    }
+    // length decrease
+    for (let i = this._lastLength - 1; i >= newLength; i--) {
+      const idx = this._idxs.maxIndex;
+      delta = delta.add(idx, ElementRemove);
+      this._idxs = this._idxs.removeByIndex(idx);
+    }
+    this._lastLength = newLength;
+    return delta;
+  }
+}
+
+/**
+ * Reader for `range` over `number`. On each compute, rebuilds the
+ * full new range and diffs against the previous state via
+ * `IndexListDeltaExt.computeDelta`. Reuses indices for unchanged
+ * positions where possible.
+ *
+ * PORT NOTE: F# AList.range optimises this with an explicit
+ * four-region delta (lower/upper × +/-) computed by
+ * `RangeDelta.rangeChange`. The simpler diff-the-state approach
+ * here gives identical observable behaviour at slightly higher
+ * cost when bounds change incrementally.
+ */
+class RangeReader extends AbstractStatefulReader<
+  IndexList<number>,
+  IndexListDelta<number>
+> {
+  private readonly _lower: aval<number>;
+  private readonly _upper: aval<number>;
+  constructor(lower: aval<number>, upper: aval<number>) {
+    super(indexListTrace<number>());
+    this._lower = lower;
+    this._upper = upper;
+  }
+  override compute(tok: AdaptiveToken): IndexListDelta<number> {
+    const newMin = this._lower.getValue(tok) | 0;
+    const newMax = this._upper.getValue(tok) | 0;
+    let next = IndexList.empty<number>();
+    for (let v = newMin; v <= newMax; v++) next = next.add(v);
+    return IndexListDeltaExt.computeDelta(this._state, next);
+  }
+}
+
 /** Reader for `mapi` / `map`. */
 class MapReader<A, B> extends AbstractReader<IndexListDelta<B>> {
   private readonly _reader: IIndexListReader<A>;
@@ -749,6 +817,48 @@ class SortWithReader<A> extends AbstractReader<IndexListDelta<A>> {
   }
 }
 
+/**
+ * Reader for `subA` / `sub` / `take*` / `skip*`. Pulls the upstream
+ * fully on each compute, slices by ordinal `[offset, offset+count-1]`,
+ * and diffs against our previous slice via `computeDelta`. Output
+ * preserves upstream indices.
+ *
+ * PORT NOTE: F#'s `SubReader` is a hand-tuned four-region merge
+ * against `MapExt` slice/split primitives. Our equivalent rebuilds
+ * the slice and diffs — same observable behaviour at slightly
+ * higher per-tick cost. Worth revisiting if profiles show this in
+ * a hot path.
+ */
+class SubReader<T> extends AbstractStatefulReader<
+  IndexList<T>,
+  IndexListDelta<T>
+> {
+  private readonly _reader: IIndexListReader<T>;
+  private readonly _offset: aval<number>;
+  private readonly _count: aval<number>;
+  constructor(input: alist<T>, offset: aval<number>, count: aval<number>) {
+    super(indexListTrace<T>());
+    this._reader = input.getReader();
+    this._offset = offset;
+    this._count = count;
+  }
+  override compute(tok: AdaptiveToken): IndexListDelta<T> {
+    // Pull upstream so reader.state is current.
+    this._reader.getChanges(tok);
+    const offset = Math.max(0, this._offset.getValue(tok) | 0);
+    const count = Math.max(0, this._count.getValue(tok) | 0);
+    const up = this._reader.state;
+    const total = up.count;
+    const lo = Math.min(offset, total);
+    const hi = Math.min(offset + count - 1, total - 1);
+    const next =
+      hi < lo
+        ? IndexList.empty<T>()
+        : IndexList.fromMap(up.content.sliceAt(lo, hi));
+    return IndexListDeltaExt.computeDelta(this._state, next);
+  }
+}
+
 /** Reader for `pairwise` / `pairwiseCyclic`. */
 class PairwiseReader<A> extends AbstractStatefulReader<
   IndexList<[A, A]>,
@@ -1000,6 +1110,51 @@ export function toAVal<T>(list: alist<T>): aval<IndexList<T>> {
   return list.content;
 }
 
+/**
+ * Generates an alist of length `length.value`, where each element is
+ * computed via `initializer(i)`.
+ *
+ * PORT NOTE: F#'s `AList.init` is generic over the length type; the
+ * port specialises to `number` (matches the JS idiom).
+ */
+export function init<T>(
+  length: aval<number>,
+  initializer: (i: number) => T,
+): alist<T> {
+  if (length.isConstant) {
+    return constant(() => {
+      const n = Math.max(0, AVal.force(length) | 0);
+      let l = IndexList.empty<T>();
+      for (let i = 0; i < n; i++) l = l.add(initializer(i));
+      return l;
+    });
+  }
+  return ofReaderInternal<T>(() => new InitReader<T>(length, initializer));
+}
+
+/**
+ * Generates an alist over the integer range `[lower, upper]`.
+ *
+ * PORT NOTE: specialised for `number` (F# uses generic numeric
+ * arithmetic via SRTP). For empty ranges (`upper < lower`) the
+ * resulting alist is empty.
+ */
+export function range(
+  lower: aval<number>,
+  upper: aval<number>,
+): alist<number> {
+  if (lower.isConstant && upper.isConstant) {
+    return constant(() => {
+      const lo = AVal.force(lower) | 0;
+      const hi = AVal.force(upper) | 0;
+      let l = IndexList.empty<number>();
+      for (let i = lo; i <= hi; i++) l = l.add(i);
+      return l;
+    });
+  }
+  return ofReaderInternal<number>(() => new RangeReader(lower, upper));
+}
+
 export function ofAVal<T>(value: aval<Iterable<T>>): alist<T> {
   if (value.isConstant) {
     return constant(() => IndexList.ofSeq(AVal.force(value)));
@@ -1226,6 +1381,52 @@ export function rev<T>(list: alist<T>): alist<T> {
   return sortByi<T, Index>((i) => i, list, (a, b) => b.compareTo(a));
 }
 
+/**
+ * Adaptively skips `offset` elements and takes `count`.
+ * Indices in the resulting alist are inherited from the source.
+ */
+export function subA<T>(
+  offset: aval<number>,
+  count: aval<number>,
+  list: alist<T>,
+): alist<T> {
+  if (list.isConstant && offset.isConstant && count.isConstant) {
+    const o = AVal.force(offset) | 0;
+    const c = AVal.force(count) | 0;
+    return constant(() => {
+      const src = force(list);
+      const total = src.count;
+      const lo = Math.max(0, Math.min(o, total));
+      const hi = Math.min(o + c - 1, total - 1);
+      if (hi < lo) return IndexList.empty<T>();
+      return IndexList.fromMap(src.content.sliceAt(lo, hi));
+    });
+  }
+  return ofReaderInternal<T>(() => new SubReader<T>(list, offset, count));
+}
+
+/** Adaptively skips `offset` elements and takes `count`. */
+export function sub<T>(offset: number, count: number, list: alist<T>): alist<T> {
+  return subA<T>(AVal.constant(offset), AVal.constant(count), list);
+}
+
+/** Adaptively takes `count` elements from the front. */
+export function take<T>(count: number, list: alist<T>): alist<T> {
+  return sub<T>(0, count, list);
+}
+/** Adaptively takes `count` (aval) elements from the front. */
+export function takeA<T>(count: aval<number>, list: alist<T>): alist<T> {
+  return subA<T>(AVal.constant(0), count, list);
+}
+/** Adaptively skips the first `count` elements. */
+export function skip<T>(count: number, list: alist<T>): alist<T> {
+  return subA<T>(AVal.constant(count), AVal.constant(0x7fffffff), list);
+}
+/** Adaptively skips the first `count` (aval) elements. */
+export function skipA<T>(count: aval<number>, list: alist<T>): alist<T> {
+  return subA<T>(count, AVal.constant(0x7fffffff), list);
+}
+
 export function pairwise<T>(list: alist<T>): alist<[T, T]> {
   if (list.isConstant) {
     return constant(() => {
@@ -1429,6 +1630,14 @@ export const AList = {
   ofList,
   ofArray,
   ofIndexList,
+  init,
+  range,
+  subA,
+  sub,
+  take,
+  takeA,
+  skip,
+  skipA,
   constant,
   ofReader,
   custom,

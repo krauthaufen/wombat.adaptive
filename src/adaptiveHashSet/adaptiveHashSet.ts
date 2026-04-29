@@ -895,6 +895,83 @@ export function xor<T>(a: aset<T>, b: aset<T>): aset<T> {
   );
 }
 
+/**
+ * Reader for `range`: emits Add/Rem deltas as the integer range
+ * `[lower, upper]` shifts. Specialised for `number`.
+ */
+class SetRangeReader extends AbstractReader<HashSetDelta<number>> {
+  private readonly _lower: aval<number>;
+  private readonly _upper: aval<number>;
+  private _lastMin = 0;
+  private _lastMax = -1;
+  constructor(lower: aval<number>, upper: aval<number>) {
+    super(HashSetDelta.empty<number>());
+    this._lower = lower;
+    this._upper = upper;
+  }
+  override compute(tok: AdaptiveToken): HashSetDelta<number> {
+    const newMin = this._lower.getValue(tok) | 0;
+    const newMax = this._upper.getValue(tok) | 0;
+    let delta = HashSetDelta.empty<number>();
+
+    const oldEmpty = this._lastMax < this._lastMin;
+    const newEmpty = newMax < newMin;
+
+    if (oldEmpty && newEmpty) {
+      // nothing
+    } else if (oldEmpty) {
+      for (let i = newMin; i <= newMax; i++)
+        delta = delta.combine(HashSetDelta.single(SetOperation.add(i)));
+    } else if (newEmpty) {
+      for (let i = this._lastMin; i <= this._lastMax; i++)
+        delta = delta.combine(HashSetDelta.single(SetOperation.rem(i)));
+    } else {
+      // Add new elements not in the old range.
+      for (let i = newMin; i <= newMax; i++) {
+        if (i < this._lastMin || i > this._lastMax) {
+          delta = delta.combine(HashSetDelta.single(SetOperation.add(i)));
+        }
+      }
+      // Remove old elements not in the new range.
+      for (let i = this._lastMin; i <= this._lastMax; i++) {
+        if (i < newMin || i > newMax) {
+          delta = delta.combine(HashSetDelta.single(SetOperation.rem(i)));
+        }
+      }
+    }
+    this._lastMin = newMin;
+    this._lastMax = newMax;
+    return delta;
+  }
+}
+
+/**
+ * Adaptive integer range as an `aset<number>`. Order is undefined
+ * (it's a set); see `AList.range` for an ordered list.
+ *
+ * PORT NOTE: specialised for `number`. F# does not have an
+ * `ASet.range` — this is a TS-side convenience matching `AList.range`.
+ */
+export function range(
+  lower: aval<number>,
+  upper: aval<number>,
+): aset<number> {
+  if (lower.isConstant && upper.isConstant) {
+    const lo = AVal.force(lower) | 0;
+    const hi = AVal.force(upper) | 0;
+    const arr: number[] = [];
+    for (let i = lo; i <= hi; i++) arr.push(i);
+    return ofArray(arr);
+  }
+  return ofReaderInternal<number>(
+    () =>
+      new SetRangeReader(lower, upper) as unknown as IOpReaderWithState<
+        unknown,
+        HashSetDelta<number>
+      >,
+  );
+}
+
 export function ofAVal<T>(value: aval<Iterable<T>>): aset<T> {
   if (value.isConstant) {
     return constant(() => HashSet.ofSeq(AVal.force(value)));
@@ -1366,6 +1443,7 @@ export const ASet = {
   ofList,
   ofArray,
   ofHashSet,
+  range,
   toAVal,
   ofReader,
   custom,
