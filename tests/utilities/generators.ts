@@ -40,8 +40,22 @@ import {
   type aset as RefASet,
 } from "../../src/reference/adaptiveHashSet.js";
 
-import { HashSet } from "../../src/datastructures/hashCollections.js";
+import { HashSet, HashMap } from "../../src/datastructures/hashCollections.js";
 import { transact } from "../../src/core/transaction.js";
+
+import {
+  AMap as RealAMapOps,
+  type amap as RealAMap,
+} from "../../src/adaptiveHashMap/adaptiveHashMap.js";
+import {
+  ChangeableHashMap as RealCMap,
+  cmap as realCmap,
+} from "../../src/adaptiveHashMap/changeableHashMap.js";
+import {
+  AMap as RefAMapOps,
+  ChangeableHashMap as RefCMap,
+  type amap as RefAMap,
+} from "../../src/reference/adaptiveHashMap.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -67,6 +81,13 @@ export interface VSet<T> {
   readonly sref: RefASet<T>;
   readonly sexpression: string;
   readonly schanges: () => ChangeGen[];
+}
+
+export interface VMap<K, V> {
+  readonly mreal: RealAMap<K, V>;
+  readonly mref: RefAMap<K, V>;
+  readonly mexpression: string;
+  readonly mchanges: () => ChangeGen[];
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +152,9 @@ const arbInt = fc.integer({ min: -8, max: 8 });
 const arbHashSet = fc
   .array(arbInt, { maxLength: 6 })
   .map((xs) => HashSet.ofArray(xs));
+const arbHashMap = fc
+  .array(fc.tuple(arbInt, arbInt), { maxLength: 6 })
+  .map((xs) => HashMap.ofArray<number, number>(xs));
 
 // ---------------------------------------------------------------------------
 // VVal<int> generators
@@ -519,6 +543,197 @@ export const arbVSet = vsetGen;
 
 /** Top-level VVal generator at a given size. */
 export const arbVVal = vvalGen;
+
+// ---------------------------------------------------------------------------
+// VMap<int, int> generators
+// ---------------------------------------------------------------------------
+
+function vmapInit(): fc.Arbitrary<VMap<number, number>> {
+  return arbHashMap.chain((value) => {
+    const id = nextCid();
+    const real = realCmap<number, number>(value);
+    const ref = new RefCMap<number, number>(value);
+    return fc.constant({
+      mreal: real,
+      mref: ref,
+      mexpression: `c${id}`,
+      mchanges: () => [
+        {
+          cell: real,
+          change: arbHashMap.map((nv) => () => {
+            real.value = nv;
+            ref.value = nv;
+            return `C${id} <- ${[...nv].map(([k, v]) => `${k}=>${v}`).join(",")}`;
+          }),
+        },
+      ],
+    } satisfies VMap<number, number>);
+  });
+}
+
+function vmapConstant(): fc.Arbitrary<VMap<number, number>> {
+  return arbHashMap.map((v) => ({
+    mreal: RealAMapOps.ofHashMap(v),
+    mref: RefAMapOps.ofHashMap(v),
+    mexpression: `const(${[...v].length})`,
+    mchanges: () => [],
+  }));
+}
+
+function vmapMap({ size }: { size: number }): fc.Arbitrary<VMap<number, number>> {
+  return fc
+    .tuple(
+      vmapGen({ size: size - 2 }),
+      fnArb<readonly [number, number], number>(arbInt),
+    )
+    .map(([m, fn]) => ({
+      mreal: RealAMapOps.map((k, v) => fn.apply([k, v]), m.mreal),
+      mref: RefAMapOps.map((k, v) => fn.apply([k, v]), m.mref),
+      mexpression: `map (\n${indent(m.mexpression)}\n)`,
+      mchanges: m.mchanges,
+    }));
+}
+
+function vmapMapValue({
+  size,
+}: {
+  size: number;
+}): fc.Arbitrary<VMap<number, number>> {
+  return fc
+    .tuple(vmapGen({ size: size - 2 }), fnArb<number, number>(arbInt))
+    .map(([m, fn]) => ({
+      mreal: RealAMapOps.mapValue(fn.apply, m.mreal),
+      mref: RefAMapOps.mapValue(fn.apply, m.mref),
+      mexpression: `map' (\n${indent(m.mexpression)}\n)`,
+      mchanges: m.mchanges,
+    }));
+}
+
+function vmapChoose({ size }: { size: number }): fc.Arbitrary<VMap<number, number>> {
+  return fc
+    .tuple(
+      vmapGen({ size: size - 2 }),
+      fnArb<readonly [number, number], number | undefined>(
+        fc.option(arbInt, { nil: undefined, freq: 3 }),
+      ),
+    )
+    .map(([m, fn]) => ({
+      mreal: RealAMapOps.choose((k, v) => fn.apply([k, v]), m.mreal),
+      mref: RefAMapOps.choose((k, v) => fn.apply([k, v]), m.mref),
+      mexpression: `choose (\n${indent(m.mexpression)}\n)`,
+      mchanges: m.mchanges,
+    }));
+}
+
+function vmapFilter({
+  size,
+}: {
+  size: number;
+}): fc.Arbitrary<VMap<number, number>> {
+  return fc
+    .tuple(
+      vmapGen({ size: size - 2 }),
+      fnArb<readonly [number, number], boolean>(fc.boolean()),
+    )
+    .map(([m, fn]) => ({
+      mreal: RealAMapOps.filter((k, v) => fn.apply([k, v]), m.mreal),
+      mref: RefAMapOps.filter((k, v) => fn.apply([k, v]), m.mref),
+      mexpression: `filter (\n${indent(m.mexpression)}\n)`,
+      mchanges: m.mchanges,
+    }));
+}
+
+function vmapUnion({
+  size,
+}: {
+  size: number;
+}): fc.Arbitrary<VMap<number, number>> {
+  const half = Math.floor(size / 2);
+  return fc.tuple(vmapGen({ size: half }), vmapGen({ size: half })).map(
+    ([a, b]) => ({
+      mreal: RealAMapOps.union(a.mreal, b.mreal),
+      mref: RefAMapOps.union(a.mref, b.mref),
+      mexpression: `union\n${indent(a.mexpression)}\n${indent(b.mexpression)}`,
+      mchanges: () => [...a.mchanges(), ...b.mchanges()],
+    }),
+  );
+}
+
+function vmapMapSet({
+  size,
+}: {
+  size: number;
+}): fc.Arbitrary<VMap<number, number>> {
+  return fc
+    .tuple(arbVSet({ size }), fnArb<number, number>(arbInt))
+    .map(([s, fn]) => ({
+      mreal: RealAMapOps.mapSet(fn.apply, s.sreal),
+      mref: RefAMapOps.mapSet(fn.apply, s.sref),
+      mexpression: `mapSet (\n${indent(s.sexpression)}\n)`,
+      mchanges: s.schanges,
+    }));
+}
+
+function vmapBind({ size }: { size: number }): fc.Arbitrary<VMap<number, number>> {
+  return fc
+    .tuple(
+      vvalGen({ size: 0 }),
+      fc.integer({ min: 0, max: 0x7fffffff }),
+    )
+    .map(([v, seed]) => {
+      const cache = new Map<number, VMap<number, number>>();
+      let latest: VMap<number, number> | undefined;
+      const mapping = (k: number): VMap<number, number> => {
+        let inner = cache.get(k);
+        if (inner === undefined) {
+          const subSeed = stringHash(seed + ":" + k);
+          inner = fc.sample(vmapGen({ size: Math.max(0, size - 1) }), {
+            numRuns: 1,
+            seed: subSeed,
+          })[0]!;
+          cache.set(k, inner);
+        }
+        latest = inner;
+        return inner;
+      };
+      return {
+        mreal: RealAMapOps.bind((a: number) => mapping(a).mreal, v.real),
+        mref: RefAMapOps.bind((a: number) => mapping(a).mref, v.ref),
+        mexpression: `bind (\n${indent(v.expression)}\n)`,
+        mchanges: () => {
+          if (latest === undefined) return v.changes();
+          return [...latest.mchanges(), ...v.changes()];
+        },
+      };
+    });
+}
+
+export function vmapGen({
+  size,
+}: {
+  size: number;
+}): fc.Arbitrary<VMap<number, number>> {
+  if (size <= 0) {
+    return fc.oneof(
+      { arbitrary: vmapConstant(), weight: 1 },
+      { arbitrary: vmapInit(), weight: 5 },
+    );
+  }
+  return fc.oneof(
+    { arbitrary: vmapConstant(), weight: 1 },
+    { arbitrary: vmapInit(), weight: 3 },
+    { arbitrary: vmapMap({ size }), weight: 3 },
+    { arbitrary: vmapMapValue({ size }), weight: 3 },
+    { arbitrary: vmapChoose({ size }), weight: 3 },
+    { arbitrary: vmapFilter({ size }), weight: 3 },
+    { arbitrary: vmapUnion({ size }), weight: 3 },
+    { arbitrary: vmapMapSet({ size }), weight: 2 },
+    { arbitrary: vmapBind({ size }), weight: 1 },
+  );
+}
+
+/** Top-level VMap generator at a given size. */
+export const arbVMap = vmapGen;
 
 // Avoid "unused" complaints from imports we keep in the API surface.
 void RealCSet;
