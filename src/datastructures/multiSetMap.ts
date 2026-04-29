@@ -2,7 +2,7 @@
 
 import { HashMap, HashSet } from "./hashCollections.js";
 
-/// A simple multi-map: key → set of values.
+/** A simple multi-map: key → set of values. */
 export type MultiSetMap<K, V> = HashMap<K, HashSet<V>>;
 
 export const MultiSetMap = {

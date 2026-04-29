@@ -91,8 +91,10 @@ export function setUnsafePerformLevelChecking(v: boolean): void {
 // AdaptiveObject — abstract base class for adaptive cells
 // ---------------------------------------------------------------------------
 
-/// Core implementation of IAdaptiveObject containing tools for evaluation
-/// and locking.
+/**
+ * Core implementation of IAdaptiveObject containing tools for evaluation
+ * and locking.
+ */
 //
 // PORT NOTE: F# made the class `[<AbstractClass>]` with abstract members
 // `MarkObject`/`AllInputProcessedObject`/`InputChangedObject` and bound
@@ -107,7 +109,7 @@ export class AdaptiveObject implements IAdaptiveObject {
   private _weak: WeakRef<IAdaptiveObject> | null = null;
   private _tag: unknown = null;
 
-  /// See IAdaptiveObject.Weak
+  /** See IAdaptiveObject.Weak */
   get weak(): WeakRef<IAdaptiveObject> {
     // PORT NOTE: F# accepts a benign race here; in JS there's no race,
     // but the lazy-allocate-on-first-access pattern is still correct.
@@ -144,26 +146,34 @@ export class AdaptiveObject implements IAdaptiveObject {
 
   readonly isConstant: boolean = false;
 
-  /// Allows a specific implementation to evaluate the cell during the
-  /// change propagation process.
+  /**
+   * Allows a specific implementation to evaluate the cell during the
+   * change propagation process.
+   */
   mark(): boolean {
     return true;
   }
 
-  /// Gets called after all inputs of the object have been processed
-  /// and directly before the object will be marked.
+  /**
+   * Gets called after all inputs of the object have been processed
+   * and directly before the object will be marked.
+   */
   allInputsProcessed(_t: unknown): void {
     /* default no-op */
   }
 
-  /// Gets called whenever a current input of the object gets marked
-  /// out of date.
+  /**
+   * Gets called whenever a current input of the object gets marked
+   * out of date.
+   */
   inputChanged(_t: unknown, _o: IAdaptiveObject): void {
     /* default no-op */
   }
 
-  /// Utility function for evaluating an object even if it is not marked
-  /// as outOfDate. Originally took care of locking; locks removed.
+  /**
+   * Utility function for evaluating an object even if it is not marked
+   * as outOfDate. Originally took care of locking; locks removed.
+   */
   evaluateAlways<T>(token: AdaptiveToken, f: (t: AdaptiveToken) => T): T {
     const caller = token.caller;
     const depth = unsafeEvaluationDepth();
@@ -217,9 +227,11 @@ export class AdaptiveObject implements IAdaptiveObject {
     return res;
   }
 
-  /// Utility function for evaluating an object if it is marked as
-  /// outOfDate. If the object is actually outOfDate the given function
-  /// is executed and otherwise the given default value is returned.
+  /**
+   * Utility function for evaluating an object if it is marked as
+   * outOfDate. If the object is actually outOfDate the given function
+   * is executed and otherwise the given default value is returned.
+   */
   evaluateIfNeeded<T>(
     token: AdaptiveToken,
     otherwise: T,
@@ -231,8 +243,10 @@ export class AdaptiveObject implements IAdaptiveObject {
     });
   }
 
-  /// Executes the given action after the (currently running)
-  /// evaluation has finished (once).
+  /**
+   * Executes the given action after the (currently running)
+   * evaluation has finished (once).
+   */
   static runAfterEvaluate(action: () => void): void {
     AfterEvaluateCallbacks.add(action);
   }
@@ -242,25 +256,29 @@ export class AdaptiveObject implements IAdaptiveObject {
   // — exposed as instance methods on AdaptiveObject delegating to the
   // free functions in `./callbacks.js`.
 
-  /// Registers a callback executed whenever the object gets marked
-  /// out-of-date. Does not fire when the object is currently
-  /// out-of-date. Returns a disposable for removing the callback.
+  /**
+   * Registers a callback executed whenever the object gets marked
+   * out-of-date. Does not fire when the object is currently
+   * out-of-date. Returns a disposable for removing the callback.
+   */
   addMarkingCallback(callback: () => void): IDisposable {
     return addMarkingCallback(this, callback);
   }
 
-  /// Same as `addMarkingCallback` but holds the callback weakly.
+  /** Same as `addMarkingCallback` but holds the callback weakly. */
   addWeakMarkingCallback(callback: () => void): IDisposable {
     return addWeakMarkingCallback(this, callback);
   }
 
-  /// Registers a callback that fires ONCE when the next out-of-date
-  /// marking visits the object.
+  /**
+   * Registers a callback that fires ONCE when the next out-of-date
+   * marking visits the object.
+   */
   onNextMarking(callback: () => void): IDisposable {
     return onNextMarking(this, callback);
   }
 
-  /// Same as `onNextMarking` but holds the callback weakly.
+  /** Same as `onNextMarking` but holds the callback weakly. */
   onWeakNextMarking(callback: () => void): IDisposable {
     return onWeakNextMarking(this, callback);
   }

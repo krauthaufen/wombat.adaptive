@@ -64,32 +64,44 @@ export interface IAdaptiveValueVisitor<R> {
   visit<T>(value: IAdaptiveValue_<T>): R;
 }
 
-/// `aval<T>` — public alias used everywhere. Method-chained surface for
-/// unary combinators is declared on this interface; classes implement
-/// the methods directly.
+/**
+ * `aval<T>` — public alias used everywhere. Method-chained surface for
+ * unary combinators is declared on this interface; classes implement
+ * the methods directly.
+ */
 export interface aval<T> extends IAdaptiveValue_<T> {
-  /// Adaptively maps the value with `f`. Returns a new aval that
-  /// re-evaluates `f` whenever this value changes.
+  /**
+   * Adaptively maps the value with `f`. Returns a new aval that
+   * re-evaluates `f` whenever this value changes.
+   */
   map<R>(f: (a: T) => R): aval<R>;
 
-  /// Adaptively binds the value with `f`. The returned aval depends on
-  /// whichever aval `f` produces for the current value.
+  /**
+   * Adaptively binds the value with `f`. The returned aval depends on
+   * whichever aval `f` produces for the current value.
+   */
   bind<R>(f: (a: T) => aval<R>): aval<R>;
 
-  /// Maps the value with `f` *without* dirty tracking — the mapping is
-  /// re-applied every time the result is read. Use for cheap
-  /// projections (`unbox`, `fst`, etc.).
+  /**
+   * Maps the value with `f` *without* dirty tracking — the mapping is
+   * re-applied every time the result is read. Use for cheap
+   * projections (`unbox`, `fst`, etc.).
+   */
   mapNonAdaptive<R>(f: (a: T) => R): aval<R>;
 
-  /// Reads the current value. Untracked. Should not be called inside
-  /// another adaptive evaluation.
+  /**
+   * Reads the current value. Untracked. Should not be called inside
+   * another adaptive evaluation.
+   */
   force(): T;
 
-  /// Subscribes to value changes. Fires once immediately with the
-  /// current value, then on every subsequent change.
+  /**
+   * Subscribes to value changes. Fires once immediately with the
+   * current value, then on every subsequent change.
+   */
   addCallback(action: (v: T) => void): IDisposable;
 
-  /// Same as `addCallback` but keeps the callback weakly.
+  /** Same as `addCallback` but keeps the callback weakly. */
   addWeakCallback(action: (v: T) => void): IDisposable;
 }
 
@@ -122,8 +134,10 @@ export class ChangeableValue<T>
     return this.evaluateAlways(token, () => this._value);
   }
 
-  /// Sets the current state of the cval. Returns whether the value
-  /// actually changed.
+  /**
+   * Sets the current state of the cval. Returns whether the value
+   * actually changed.
+   */
   updateTo(newValue: T): boolean {
     if (!Object.is(this._value, newValue)) {
       this._value = newValue;
@@ -166,10 +180,10 @@ export class ChangeableValue<T>
   }
 }
 
-/// Type alias matching F# `cval<'T>`.
+/** Type alias matching F# `cval<'T>`. */
 export type cval<T> = ChangeableValue<T>;
 
-/// Convenience constructor — `cval(0)` produces a `ChangeableValue<number>`.
+/** Convenience constructor — `cval(0)` produces a `ChangeableValue<number>`. */
 export function cval<T>(value: T): ChangeableValue<T> {
   return new ChangeableValue<T>(value);
 }
@@ -939,22 +953,28 @@ export function custom<T>(compute: (token: AdaptiveToken) => T): aval<T> {
 // N-ary combinators — `zip` wrapper
 // ---------------------------------------------------------------------------
 
-/// Maps a tuple of avals' element types out of the tuple shape.
-///   AValValues<[aval<A>, aval<B>]>  =  [A, B]
+/**
+ * Maps a tuple of avals' element types out of the tuple shape.
+ *   AValValues<[aval<A>, aval<B>]>  =  [A, B]
+ */
 type AValValues<T extends ReadonlyArray<aval<unknown>>> = {
   [K in keyof T]: T[K] extends aval<infer U> ? U : never;
 };
 
-/// Wrapper produced by `zip(...vals)`. Carries the value-type tuple as
-/// a phantom so `.map`/`.bind` callbacks are precisely typed.
+/**
+ * Wrapper produced by `zip(...vals)`. Carries the value-type tuple as
+ * a phantom so `.map`/`.bind` callbacks are precisely typed.
+ */
 export class Zipped<Ts extends readonly unknown[]> {
   private readonly _avals: ReadonlyArray<aval<unknown>>;
   constructor(avals: ReadonlyArray<aval<unknown>>) {
     this._avals = avals;
   }
 
-  /// Adaptively maps the tuple of values with `f`. The callback's
-  /// argument types match the value-type tuple.
+  /**
+   * Adaptively maps the tuple of values with `f`. The callback's
+   * argument types match the value-type tuple.
+   */
   map<R>(f: (...vs: Ts) => R): aval<R> {
     return mapInternal(
       this._avals,
@@ -962,8 +982,10 @@ export class Zipped<Ts extends readonly unknown[]> {
     );
   }
 
-  /// Adaptively binds the tuple of values with `f`. The callback returns
-  /// an `aval<R>` whose latest value the resulting aval reflects.
+  /**
+   * Adaptively binds the tuple of values with `f`. The callback returns
+   * an `aval<R>` whose latest value the resulting aval reflects.
+   */
   bind<R>(f: (...vs: Ts) => aval<R>): aval<R> {
     return bindInternal(
       this._avals,
@@ -972,9 +994,11 @@ export class Zipped<Ts extends readonly unknown[]> {
   }
 }
 
-/// Combines any number of avals into a `Zipped` wrapper carrying their
-/// value-type tuple. Used as the entry point for n-ary adaptive
-/// combinators: `zip(x, y, z).map((a, b, c) => …)`.
+/**
+ * Combines any number of avals into a `Zipped` wrapper carrying their
+ * value-type tuple. Used as the entry point for n-ary adaptive
+ * combinators: `zip(x, y, z).map((a, b, c) => …)`.
+ */
 export function zip<T extends readonly aval<unknown>[]>(
   ...vals: T
 ): Zipped<AValValues<T>> {

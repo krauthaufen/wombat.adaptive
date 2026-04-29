@@ -131,8 +131,10 @@ function create<K, V>(
   return new Inner<K, V>(l, k, v, r, 1 + Math.max(lh, rh), 1 + lc + rc);
 }
 
-/// Single rotation step: produces a balanced node where child heights
-/// differ by ≤ 2. Caller guarantees |Δheight| ≤ 3.
+/**
+ * Single rotation step: produces a balanced node where child heights
+ * differ by ≤ 2. Caller guarantees |Δheight| ≤ 3.
+ */
 function unsafeBinary<K, V>(
   l: Node<K, V> | null,
   k: K,
@@ -179,9 +181,11 @@ function unsafeBinary<K, V>(
   return new Inner<K, V>(l, k, v, r, 1 + Math.max(lh, rh), 1 + lc + rc);
 }
 
-/// Recursive rebalancing merge tolerating any height difference. Used
-/// by partition/choose/filter/join when subtrees can have arbitrary
-/// height ratios.
+/**
+ * Recursive rebalancing merge tolerating any height difference. Used
+ * by partition/choose/filter/join when subtrees can have arbitrary
+ * height ratios.
+ */
 function binary<K, V>(
   l: Node<K, V> | null,
   k: K,
@@ -1778,9 +1782,11 @@ export class MapExt<K, V> implements Iterable<[K, V]> {
     return new MapExt<K, U>(nodeMap(mapping, this._root), this._cmp);
   }
 
-  /// Like `map` but lets the mapping return a new key as well. Caller
-  /// must guarantee the new keys preserve sorted order; the AVL
-  /// invariant is not re-checked.
+  /**
+   * Like `map` but lets the mapping return a new key as well. Caller
+   * must guarantee the new keys preserve sorted order; the AVL
+   * invariant is not re-checked.
+   */
   mapMonotonic<K2, U>(
     mapping: (k: K, v: V) => [K2, U],
     cmp2: KeyComparer<K2>,
@@ -1840,22 +1846,24 @@ export class MapExt<K, V> implements Iterable<[K, V]> {
     );
   }
 
-  /// Take the first `n` entries (in sorted order).
+  /** Take the first `n` entries (in sorted order). */
   take(n: number): MapExt<K, V> {
     return new MapExt<K, V>(nodeTake(n, this._root), this._cmp);
   }
-  /// Skip the first `n` entries.
+  /** Skip the first `n` entries. */
   skip(n: number): MapExt<K, V> {
     return new MapExt<K, V>(nodeSkip(n, this._root), this._cmp);
   }
-  /// Slice between the given zero-based indices (both inclusive).
+  /** Slice between the given zero-based indices (both inclusive). */
   sliceAt(minIndex: number, maxIndex: number): MapExt<K, V> {
     return new MapExt<K, V>(nodeSliceAt(minIndex, maxIndex, this._root), this._cmp);
   }
 
-  /// Splits the map at `key`. Returns the entries strictly less than
-  /// `key`, the value at `key` if present, and the entries strictly
-  /// greater.
+  /**
+   * Splits the map at `key`. Returns the entries strictly less than
+   * `key`, the value at `key` if present, and the entries strictly
+   * greater.
+   */
   split(key: K): {
     hasValue: boolean;
     left: MapExt<K, V>;
@@ -1904,7 +1912,7 @@ export class MapExt<K, V> implements Iterable<[K, V]> {
     );
   }
 
-  /// Entry at zero-based index `i`, or undefined.
+  /** Entry at zero-based index `i`, or undefined. */
   itemV(i: number): [K, V] | undefined {
     return nodeTryGetItem(i, this._root);
   }
@@ -1989,7 +1997,7 @@ export class MapExt<K, V> implements Iterable<[K, V]> {
     };
   }
 
-  /// Compute a delta-as-MapExt mapping from this to `other`.
+  /** Compute a delta-as-MapExt mapping from this to `other`. */
   computeDeltaTo<D>(
     other: MapExt<K, V>,
     add: (k: K, v: V) => D,

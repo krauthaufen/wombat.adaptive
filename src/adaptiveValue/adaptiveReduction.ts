@@ -12,9 +12,11 @@
 // `inline sum/average/product` were inline so they could specialise per
 // numeric type — TS has no equivalent.
 
-/// AdaptiveReduction encodes a fold-with-inverse: an accumulator type
-/// `S`, a way to add an element of type `A`, an optional way to subtract,
-/// and a `view` projection from `S` to the externally observable `V`.
+/**
+ * AdaptiveReduction encodes a fold-with-inverse: an accumulator type
+ * `S`, a way to add an element of type `A`, an optional way to subtract,
+ * and a `view` projection from `S` to the externally observable `V`.
+ */
 export interface AdaptiveReduction<A, S, V> {
   readonly seed: S;
   readonly add: (s: S, a: A) => S;
@@ -68,7 +70,7 @@ export function mapOut<A, S, V, W>(
   };
 }
 
-/// Counts elements (positive add, negative sub).
+/** Counts elements (positive add, negative sub). */
 export const count: AdaptiveReduction<unknown, number, number> = {
   seed: 0,
   add: (s, _a) => s + 1,
@@ -123,7 +125,7 @@ export const countNegative: AdaptiveReduction<boolean, number, number> = {
   view: (s) => s,
 };
 
-/// `tryMin` over a comparable type `A`. Comparison must be a total order.
+/** `tryMin` over a comparable type `A`. Comparison must be a total order. */
 export function tryMin<A>(
   compare: (l: A, r: A) => number,
 ): AdaptiveReduction<A, A | undefined, A | undefined> {
@@ -152,7 +154,7 @@ export function tryMax<A>(
   };
 }
 
-/// Numeric sum over `number`.
+/** Numeric sum over `number`. */
 export const sum: AdaptiveReduction<number, number, number> = {
   seed: 0,
   add: (s, a) => s + a,
@@ -160,7 +162,7 @@ export const sum: AdaptiveReduction<number, number, number> = {
   view: (s) => s,
 };
 
-/// Numeric average over `number`.
+/** Numeric average over `number`. */
 export const average: AdaptiveReduction<number, [number, number], number> = {
   seed: [0, 0],
   add: ([c, s], a) => [c + 1, s + a],
@@ -168,8 +170,10 @@ export const average: AdaptiveReduction<number, [number, number], number> = {
   view: ([c, s]) => (c === 0 ? 0 : s / c),
 };
 
-/// Numeric product over `number`. Subtraction returns `undefined`
-/// when the divisor is zero (no inverse).
+/**
+ * Numeric product over `number`. Subtraction returns `undefined`
+ * when the divisor is zero (no inverse).
+ */
 export const product: AdaptiveReduction<number, number, number> = {
   seed: 1,
   add: (s, a) => s * a,

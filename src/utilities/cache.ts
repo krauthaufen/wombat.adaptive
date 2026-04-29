@@ -11,11 +11,13 @@ interface Entry<T2> {
   refCount: number;
 }
 
-/// Cache represents a cached function which can be invoked and revoked.
-/// Invoke increments the reference count for a specific argument
-/// (possibly causing the function to be executed) whereas revoke
-/// decreases the reference count and removes the cache entry whenever
-/// the reference count is 0.
+/**
+ * Cache represents a cached function which can be invoked and revoked.
+ * Invoke increments the reference count for a specific argument
+ * (possibly causing the function to be executed) whereas revoke
+ * decreases the reference count and removes the cache entry whenever
+ * the reference count is 0.
+ */
 export class Cache<T1, T2> {
   private readonly _mapping: (v: T1) => T2;
   private readonly _cache: Map<T1, Entry<T2>> = new Map();
@@ -24,17 +26,21 @@ export class Cache<T1, T2> {
     this._mapping = mapping;
   }
 
-  /// Removes all entries from the Cache and executes a function for
-  /// all removed cache entries. Useful when contained values are
-  /// disposable resources.
+  /**
+   * Removes all entries from the Cache and executes a function for
+   * all removed cache entries. Useful when contained values are
+   * disposable resources.
+   */
   clear(remove: (v: T2) => void): void {
     for (const e of this._cache.values()) remove(e.value);
     this._cache.clear();
   }
 
-  /// Returns the function value associated with the given argument
-  /// (possibly executing the function) and increases the associated
-  /// reference count.
+  /**
+   * Returns the function value associated with the given argument
+   * (possibly executing the function) and increases the associated
+   * reference count.
+   */
   invoke(v: T1): T2 {
     const existing = this._cache.get(v);
     if (existing !== undefined) {
@@ -47,8 +53,10 @@ export class Cache<T1, T2> {
     }
   }
 
-  /// Returns the function value associated with the given argument and
-  /// decreases its reference count. Returns { deleted, value }.
+  /**
+   * Returns the function value associated with the given argument and
+   * decreases its reference count. Returns { deleted, value }.
+   */
   revokeAndGetDeletedUnsafe(v: T1): { deleted: boolean; value: T2 } {
     const existing = this._cache.get(v);
     if (existing === undefined) {
@@ -63,9 +71,11 @@ export class Cache<T1, T2> {
     }
   }
 
-  /// Decreases the reference count of the entry for the given
-  /// argument. Returns the entry (with deleted flag) or undefined
-  /// when no such entry exists.
+  /**
+   * Decreases the reference count of the entry for the given
+   * argument. Returns the entry (with deleted flag) or undefined
+   * when no such entry exists.
+   */
   tryRevokeAndGetDeleted(
     v: T1,
   ): { deleted: boolean; value: T2 } | undefined {
@@ -92,7 +102,7 @@ export class Cache<T1, T2> {
     return existing.value;
   }
 
-  /// Enumerate over all cache values.
+  /** Enumerate over all cache values. */
   values(): IterableIterator<T2> {
     const it = this._cache.values();
     return (function* () {

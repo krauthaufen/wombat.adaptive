@@ -19,12 +19,14 @@ import { TransactQueue } from "../utilities/priorityQueue.js";
 // LevelChangedException
 // ---------------------------------------------------------------------------
 
-/// When evaluating AdaptiveObjects inside a Transaction (aka eager
-/// evaluation) their level might be inconsistent when attempting to
-/// evaluate. Therefore the evaluation may raise this exception causing
-/// the evaluation to be delayed to a later time in the Transaction.
+/**
+ * When evaluating AdaptiveObjects inside a Transaction (aka eager
+ * evaluation) their level might be inconsistent when attempting to
+ * evaluate. Therefore the evaluation may raise this exception causing
+ * the evaluation to be delayed to a later time in the Transaction.
+ */
 export class LevelChangedException extends Error {
-  /// The new (effective) level of the IAdaptiveObject.
+  /** The new (effective) level of the IAdaptiveObject. */
   readonly newLevel: number;
   constructor(newLevel: number) {
     super(`LevelChanged: newLevel=${newLevel}`);
@@ -37,9 +39,11 @@ export class LevelChangedException extends Error {
 // IndirectOutputObject
 // ---------------------------------------------------------------------------
 
-/// internal type used for properly handling of decorator objects
-/// (as introduced in AVal.mapNonAdaptive). Note that it should never be
-/// necessary to use this in user-code.
+/**
+ * internal type used for properly handling of decorator objects
+ * (as introduced in AVal.mapNonAdaptive). Note that it should never be
+ * necessary to use this in user-code.
+ */
 export class IndirectOutputObject implements IAdaptiveObject {
   private _weak: WeakRef<IAdaptiveObject> | null = null;
   private readonly _real: WeakRef<IAdaptiveObject>;
@@ -142,13 +146,15 @@ export function setCurrentBuiltTransaction(t: Transaction | null): void {
   _currentTransaction = t;
 }
 
-/// Indicates if inside a running Transaction.
+/** Indicates if inside a running Transaction. */
 export function hasRunningTransaction(): boolean {
   return _runningTransaction !== null;
 }
 
-/// Gets the level of the currently running Transaction or
-/// Int32.MaxValue - 1 when no Transaction is running.
+/**
+ * Gets the level of the currently running Transaction or
+ * Int32.MaxValue - 1 when no Transaction is running.
+ */
 export function runningTransactionLevel(): number {
   if (_runningTransaction !== null) {
     return _runningTransaction.currentLevel;
@@ -161,11 +167,13 @@ export function runningTransactionLevel(): number {
 // Transaction
 // ---------------------------------------------------------------------------
 
-/// Holds a set of adaptive objects which have been changed and shall
-/// therefore be marked as outOfDate. Committing the transaction
-/// propagates these changes into the dependency-graph, takes care of
-/// the correct execution-order and (originally) acquired appropriate
-/// locks for all objects affected.
+/**
+ * Holds a set of adaptive objects which have been changed and shall
+ * therefore be marked as outOfDate. Committing the transaction
+ * propagates these changes into the dependency-graph, takes care of
+ * the correct execution-order and (originally) acquired appropriate
+ * locks for all objects affected.
+ */
 export class Transaction {
   private readonly _q = new TransactQueue<IAdaptiveObject>();
   private _current: IAdaptiveObject | null = null;
@@ -189,23 +197,25 @@ export class Transaction {
     return this._q.contains(e);
   }
 
-  /// Gets the current Level the Transaction operates on.
+  /** Gets the current Level the Transaction operates on. */
   get currentLevel(): number {
     return this._currentLevel;
   }
 
-  /// Enqueues an adaptive object for marking.
+  /** Enqueues an adaptive object for marking. */
   enqueue(e: IAdaptiveObject): void {
     this._q.enqueue(e.level, e);
   }
 
-  /// Gets the current AdaptiveObject being marked, or null.
+  /** Gets the current AdaptiveObject being marked, or null. */
   get currentAdaptiveObject(): IAdaptiveObject | null {
     return this._current;
   }
 
-  /// Performs the entire marking process, causing all affected objects
-  /// to be made consistent with the enqueued changes.
+  /**
+   * Performs the entire marking process, causing all affected objects
+   * to be made consistent with the enqueued changes.
+   */
   commit(): void {
     // cache the currently running transaction (if any) and make
     // ourselves current.
@@ -311,7 +321,7 @@ export class Transaction {
     this._currentLevel = 0;
   }
 
-  /// Disposes the transaction running all of its finalizers.
+  /** Disposes the transaction running all of its finalizers. */
   dispose(): void {
     this.runFinalizers();
   }
@@ -321,8 +331,10 @@ export class Transaction {
 // Module-level helpers (F# `module Transaction = ...`)
 // ---------------------------------------------------------------------------
 
-/// Returns the currently running transaction or (if none)
-/// the current transaction for the calling thread.
+/**
+ * Returns the currently running transaction or (if none)
+ * the current transaction for the calling thread.
+ */
 export function getCurrentTransaction(): Transaction | null {
   if (_runningTransaction !== null) return _runningTransaction;
   if (_currentTransaction !== null) return _currentTransaction;
@@ -353,8 +365,10 @@ export function makeCurrent(t: Transaction): { dispose(): void } {
 // identical bodies and a `// TODO: identical to useTransaction ?` comment.
 // We export only `useTransaction`; `transact` below uses the same logic.
 
-/// Executes a function "inside" a newly created transaction and commits
-/// the transaction.
+/**
+ * Executes a function "inside" a newly created transaction and commits
+ * the transaction.
+ */
 export function transact<T>(action: () => T): T {
   const t = new Transaction();
   try {
@@ -366,8 +380,10 @@ export function transact<T>(action: () => T): T {
   }
 }
 
-/// Executes a function "inside" the current transaction or creates and
-/// commits a new one whenever none was current.
+/**
+ * Executes a function "inside" the current transaction or creates and
+ * commits a new one whenever none was current.
+ */
 export function transactIfNecessary<T>(action: () => T): T {
   if (_currentTransaction !== null) return action();
   return transact(action);
@@ -377,11 +393,13 @@ export function transactIfNecessary<T>(action: () => T): T {
 // IAdaptiveObject helpers (F# extension methods MarkOutdated)
 // ---------------------------------------------------------------------------
 
-/// Utility for marking an adaptive object as outOfDate. Will enqueue
-/// the object on the current transaction and fail if no current
-/// transaction can be found. However objects which are already
-/// out-of-date (or have empty outputs) might be "marked" without a
-/// transaction.
+/**
+ * Utility for marking an adaptive object as outOfDate. Will enqueue
+ * the object on the current transaction and fail if no current
+ * transaction can be found. However objects which are already
+ * out-of-date (or have empty outputs) might be "marked" without a
+ * transaction.
+ */
 export function markOutdated(x: IAdaptiveObject): void;
 export function markOutdated(x: IAdaptiveObject, fin: () => void): void;
 export function markOutdated(x: IAdaptiveObject, fin?: () => void): void {

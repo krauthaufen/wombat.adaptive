@@ -12,9 +12,11 @@ const indexCmp: KeyComparer<Index> = (a, b) => a.compareTo(b);
 
 const emptyMap: MapExt<Index, never> = MapExt.empty<Index, never>(indexCmp);
 
-/// A persistent array-like structure indexed by `Index`.
-/// Insert/lookup/delete in O(N) (sorted-array storage). Public API
-/// matches the F# `IndexList<T>`.
+/**
+ * A persistent array-like structure indexed by `Index`.
+ * Insert/lookup/delete in O(N) (sorted-array storage). Public API
+ * matches the F# `IndexList<T>`.
+ */
 export class IndexList<T> implements Iterable<T> {
   private readonly _l: Index;
   private readonly _h: Index;
@@ -70,7 +72,7 @@ export class IndexList<T> implements Iterable<T> {
     return e[1];
   }
 
-  /// Append element to the end.
+  /** Append element to the end. */
   add(element: T): IndexList<T> {
     if (this._content.count === 0) {
       const t = IndexOps.after(indexZero);
@@ -80,7 +82,7 @@ export class IndexList<T> implements Iterable<T> {
     return new IndexList<T>(this._l, t, this._content.add(t, element));
   }
 
-  /// Prepend element to the front.
+  /** Prepend element to the front. */
   prepend(element: T): IndexList<T> {
     if (this._content.count === 0) {
       const t = IndexOps.after(indexZero);
@@ -90,7 +92,7 @@ export class IndexList<T> implements Iterable<T> {
     return new IndexList<T>(t, this._h, this._content.add(t, element));
   }
 
-  /// Set the element at the given Index, extending bounds if needed.
+  /** Set the element at the given Index, extending bounds if needed. */
   setByIndex(index: Index, value: T): IndexList<T> {
     if (this._content.count === 0) {
       return new IndexList<T>(index, index, MapExt.single(index, value, indexCmp));
@@ -101,7 +103,7 @@ export class IndexList<T> implements Iterable<T> {
     return new IndexList<T>(this._l, this._h, c);
   }
 
-  /// Set the element at the given int position. No-op if out of range.
+  /** Set the element at the given int position. No-op if out of range. */
   setByPosition(i: number, value: T): IndexList<T> {
     if (i < 0 || i >= this._content.count) return this;
     const e = this._content.itemV(i);
@@ -109,7 +111,7 @@ export class IndexList<T> implements Iterable<T> {
     return this.setByIndex(e[0], value);
   }
 
-  /// Update the element at the given int position via callback.
+  /** Update the element at the given int position via callback. */
   updateAt(i: number, update: (t: T) => T): IndexList<T> {
     const e = this._content.itemV(i);
     if (e === undefined) return this;
@@ -117,7 +119,7 @@ export class IndexList<T> implements Iterable<T> {
     return new IndexList<T>(this._l, this._h, next);
   }
 
-  /// Insert at int position [0..count].
+  /** Insert at int position [0..count]. */
   insertAt(i: number, value: T): IndexList<T> {
     if (i < 0 || i > this._content.count) return this;
     if (this._content.count === 0) {
@@ -131,8 +133,10 @@ export class IndexList<T> implements Iterable<T> {
     return this.setByIndex(idx, value);
   }
 
-  /// Insert directly before the given Index. If the index is not
-  /// present, behaves as `setByIndex`.
+  /**
+   * Insert directly before the given Index. If the index is not
+   * present, behaves as `setByIndex`.
+   */
   insertBefore(index: Index, value: T): IndexList<T> {
     const n = this._content.neighbours(index);
     if (n.self === undefined) return this.setByIndex(index, value);
@@ -143,8 +147,10 @@ export class IndexList<T> implements Iterable<T> {
     return this.setByIndex(newIndex, value);
   }
 
-  /// Insert directly after the given Index. If the index is not
-  /// present, behaves as `setByIndex`.
+  /**
+   * Insert directly after the given Index. If the index is not
+   * present, behaves as `setByIndex`.
+   */
   insertAfter(index: Index, value: T): IndexList<T> {
     const n = this._content.neighbours(index);
     if (n.self === undefined) return this.setByIndex(index, value);
@@ -155,18 +161,18 @@ export class IndexList<T> implements Iterable<T> {
     return this.setByIndex(newIndex, value);
   }
 
-  /// Returns the Index for the given int position, or undefined.
+  /** Returns the Index for the given int position, or undefined. */
   tryGetIndex(i: number): Index | undefined {
     const e = this._content.itemV(i);
     return e === undefined ? undefined : e[0];
   }
 
-  /// Returns the int position for the given Index, or -1 if absent.
+  /** Returns the int position for the given Index, or -1 if absent. */
   tryGetPosition(idx: Index): number {
     return this._content.tryGetIndex(idx);
   }
 
-  /// Removes the entry at the given Index.
+  /** Removes the entry at the given Index. */
   removeByIndex(index: Index): IndexList<T> {
     if (!this._content.containsKey(index)) return this;
     const c = this._content.remove(index);
@@ -176,7 +182,7 @@ export class IndexList<T> implements Iterable<T> {
     return new IndexList<T>(this._l, this._h, c);
   }
 
-  /// Removes the entry at the given int position.
+  /** Removes the entry at the given int position. */
   removeAt(i: number): IndexList<T> {
     const e = this._content.itemV(i);
     if (e === undefined) return this;
@@ -270,8 +276,10 @@ export class IndexList<T> implements Iterable<T> {
     return IndexList.fromMap(MapExt.ofArray(slice, indexCmp));
   }
 
-  /// Concatenate two IndexLists. New Indices are minted on the right
-  /// to slot strictly after the left's max.
+  /**
+   * Concatenate two IndexLists. New Indices are minted on the right
+   * to slot strictly after the left's max.
+   */
   static append<T>(a: IndexList<T>, b: IndexList<T>): IndexList<T> {
     if (a.isEmpty) return b;
     if (b.isEmpty) return a;
@@ -299,15 +307,17 @@ export class IndexList<T> implements Iterable<T> {
     return IndexList.ofSeq(elements);
   }
 
-  /// Creates an IndexList covering the integer range [lower, upper].
+  /** Creates an IndexList covering the integer range [lower, upper]. */
   static range(lower: number, upper: number): IndexList<number> {
     const out: number[] = [];
     for (let i = lower; i <= upper; i++) out.push(i);
     return IndexList.ofArray(out);
   }
 
-  /// Creates an IndexList of the given length, populated by calling
-  /// `initializer` for each index in [0, length).
+  /**
+   * Creates an IndexList of the given length, populated by calling
+   * `initializer` for each index in [0, length).
+   */
   static init<T>(length: number, initializer: (i: number) => T): IndexList<T> {
     if (length < 0) throw new Error("IndexList.init: negative length");
     const out: T[] = new Array(length);
@@ -323,8 +333,10 @@ export class IndexList<T> implements Iterable<T> {
 
   // ----- additional transforms -----
 
-  /// Reverses the value sequence while preserving the actual Index
-  /// keys (so `minIndex` and `maxIndex` are stable).
+  /**
+   * Reverses the value sequence while preserving the actual Index
+   * keys (so `minIndex` and `maxIndex` are stable).
+   */
   rev(): IndexList<T> {
     if (this.count <= 1) return this;
     const arr = this._content.toArray();
@@ -339,13 +351,13 @@ export class IndexList<T> implements Iterable<T> {
     return new IndexList<T>(this._l, this._h, res);
   }
 
-  /// Sub-range: `count` elements starting at int position `offset`.
+  /** Sub-range: `count` elements starting at int position `offset`. */
   sub(offset: number, count: number): IndexList<T> {
     if (count <= 0) return IndexList.empty<T>();
     return this.skipFirst(offset).takeFirst(count);
   }
 
-  /// Sort by a key projection.
+  /** Sort by a key projection. */
   sortBy<U>(mapping: (t: T) => U, compare?: (a: U, b: U) => number): IndexList<T> {
     const cmp = compare ?? ((a: U, b: U) => (a < b ? -1 : a > b ? 1 : 0));
     const sorted = this.toList().slice().sort((a, b) => cmp(mapping(a), mapping(b)));
@@ -369,7 +381,7 @@ export class IndexList<T> implements Iterable<T> {
     return this.sortByDescending((x) => x);
   }
 
-  /// Maps each element to a list and concatenates.
+  /** Maps each element to a list and concatenates. */
   collect<U>(mapping: (t: T) => IndexList<U>): IndexList<U> {
     let out = IndexList.empty<U>();
     this.iter((_i, v) => {
@@ -378,7 +390,7 @@ export class IndexList<T> implements Iterable<T> {
     return out;
   }
 
-  /// Numeric sum.
+  /** Numeric sum. */
   sum(this: IndexList<number>): number {
     let s = 0;
     for (const v of this) s += v;
@@ -402,12 +414,12 @@ export class IndexList<T> implements Iterable<T> {
     return s / this.count;
   }
 
-  /// Splits a list of pairs into two lists.
+  /** Splits a list of pairs into two lists. */
   static unzip<A, B>(l: IndexList<readonly [A, B]>): [IndexList<A>, IndexList<B>] {
     return [l.map((_i, p) => p[0]), l.map((_i, p) => p[1])];
   }
 
-  /// Splits a list of triples into three lists.
+  /** Splits a list of triples into three lists. */
   static unzip3<A, B, C>(
     l: IndexList<readonly [A, B, C]>,
   ): [IndexList<A>, IndexList<B>, IndexList<C>] {
@@ -418,9 +430,11 @@ export class IndexList<T> implements Iterable<T> {
     ];
   }
 
-  /// Structural equality on values, ignoring identity of Index keys.
-  /// (Two IndexLists holding the same values at the same positions
-  /// compare equal even if their Indices differ.)
+  /**
+   * Structural equality on values, ignoring identity of Index keys.
+   * (Two IndexLists holding the same values at the same positions
+   * compare equal even if their Indices differ.)
+   */
   equalsByValues(other: IndexList<T>): boolean {
     if (this.count !== other.count) return false;
     const a = this.toList();

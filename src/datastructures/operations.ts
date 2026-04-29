@@ -4,12 +4,14 @@
 // distinction. F# discriminated union `ElementOperation` becomes a
 // tagged-union type.
 
-/// Represents a set operation (Add/Remove) using a reference count.
-/// Note that internally SetOperations may have reference counts > 1 and < -1.
+/**
+ * Represents a set operation (Add/Remove) using a reference count.
+ * Note that internally SetOperations may have reference counts > 1 and < -1.
+ */
 export class SetOperation<T> {
-  /// The added/removed value
+  /** The added/removed value */
   readonly value: T;
-  /// The reference count delta.
+  /** The reference count delta. */
   readonly count: number;
 
   constructor(value: T, count: number) {
@@ -17,7 +19,7 @@ export class SetOperation<T> {
     this.count = count;
   }
 
-  /// The inverse SetOperation to this one.
+  /** The inverse SetOperation to this one. */
   get inverse(): SetOperation<T> {
     return new SetOperation<T>(this.value, -this.count);
   }
@@ -30,29 +32,31 @@ export class SetOperation<T> {
     return "Nop";
   }
 
-  /// Creates an add operation (reference delta +1).
+  /** Creates an add operation (reference delta +1). */
   static add<T>(value: T): SetOperation<T> {
     return new SetOperation<T>(value, 1);
   }
 
-  /// Creates a remove operation (reference delta -1).
+  /** Creates a remove operation (reference delta -1). */
   static rem<T>(value: T): SetOperation<T> {
     return new SetOperation<T>(value, -1);
   }
 
-  /// Creates a SetOperation with the given count.
+  /** Creates a SetOperation with the given count. */
   static create<T>(count: number, value: T): SetOperation<T> {
     return new SetOperation<T>(value, count);
   }
 
-  /// Applies a mapping function to the operation's value.
+  /** Applies a mapping function to the operation's value. */
   static map<A, B>(mapping: (a: A) => B, op: SetOperation<A>): SetOperation<B> {
     return new SetOperation<B>(mapping(op.value), op.count);
   }
 }
 
-/// Represents an element operation (Set/Remove) without its key.
-/// Typically datastructures will hold (key, ElementOperation) pairs.
+/**
+ * Represents an element operation (Set/Remove) without its key.
+ * Typically datastructures will hold (key, ElementOperation) pairs.
+ */
 export type ElementOperation<T> =
   | { readonly tag: "Set"; readonly value: T }
   | { readonly tag: "Remove" };

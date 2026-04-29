@@ -129,7 +129,7 @@ export class WeakOutputSet implements IWeakOutputSet {
     }
   }
 
-  /// Used internally to get rid of leaking WeakReferences.
+  /** Used internally to get rid of leaking WeakReferences. */
   private cleanup(): void {
     // F# original: `lock x (fun () -> ...)`. JS single-threaded, no lock.
     if (this._setOps > 100) {
@@ -143,8 +143,10 @@ export class WeakOutputSet implements IWeakOutputSet {
     }
   }
 
-  /// Adds a weak reference to the given AdaptiveObject to the set.
-  /// Returns whether the obj was new.
+  /**
+   * Adds a weak reference to the given AdaptiveObject to the set.
+   * Returns whether the obj was new.
+   */
   add(obj: IAdaptiveObject): boolean {
     if (obj.isConstant) return false;
     // F# original: `lock x (fun () -> ...)`. Removed.
@@ -157,8 +159,10 @@ export class WeakOutputSet implements IWeakOutputSet {
     }
   }
 
-  /// Removes the reference to the given AdaptiveObject from the set.
-  /// Returns whether the obj was removed.
+  /**
+   * Removes the reference to the given AdaptiveObject from the set.
+   * Returns whether the obj was removed.
+   */
   remove(obj: IAdaptiveObject): boolean {
     if (obj.isConstant) return false;
     // F# original: `lock x (fun () -> ...)`. Removed.
@@ -224,7 +228,7 @@ export class WeakOutputSet implements IWeakOutputSet {
     }
   }
 
-  /// Returns all currently living entries from the set and clears it.
+  /** Returns all currently living entries from the set and clears it. */
   consume(output: OutputBuffer): number {
     // F# original: `lock x (fun () -> ...)`. Removed.
     let cnt = 0;
@@ -295,8 +299,10 @@ export class WeakOutputSet implements IWeakOutputSet {
     this._setOps = 0;
   }
 
-  /// Indicates whether the set is (conservatively) known to be empty.
-  /// Note that we don't dereference any WeakReferences here.
+  /**
+   * Indicates whether the set is (conservatively) known to be empty.
+   * Note that we don't dereference any WeakReferences here.
+   */
   get isEmpty(): boolean {
     // F# original: `lock x (fun () -> ...)`. Removed.
     if (this._tag === TAG_SINGLE_OR_ARRAY) {
@@ -306,8 +312,10 @@ export class WeakOutputSet implements IWeakOutputSet {
   }
 }
 
-/// IWeakOutputSet implementation that always reports empty and rejects
-/// modifications. Used by ConstantObject, where outputs are meaningless.
+/**
+ * IWeakOutputSet implementation that always reports empty and rejects
+ * modifications. Used by ConstantObject, where outputs are meaningless.
+ */
 export class EmptyOutputSet implements IWeakOutputSet {
   readonly isEmpty = true;
   add(_o: IAdaptiveObject): boolean {

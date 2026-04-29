@@ -8,9 +8,11 @@
 import { HashMap } from "./hashCollections.js";
 import { SetOperation } from "./operations.js";
 
-/// Represents the difference of two HashSets. Internally uses
-/// reference counts to represent deltas and provides convenient
-/// combine functions.
+/**
+ * Represents the difference of two HashSets. Internally uses
+ * reference counts to represent deltas and provides convenient
+ * combine functions.
+ */
 export class HashSetDelta<T> implements Iterable<SetOperation<T>> {
   private readonly _store: HashMap<T, number>;
 
@@ -19,7 +21,7 @@ export class HashSetDelta<T> implements Iterable<SetOperation<T>> {
     this._store = store;
   }
 
-  /// The internal store used by the HashSetDelta.
+  /** The internal store used by the HashSetDelta. */
   get store(): HashMap<T, number> {
     return this._store;
   }
@@ -31,7 +33,7 @@ export class HashSetDelta<T> implements Iterable<SetOperation<T>> {
     return this._store.isEmpty;
   }
 
-  /// Adds a SetOperation to the HashSetDelta.
+  /** Adds a SetOperation to the HashSetDelta. */
   add(op: SetOperation<T>): HashSetDelta<T> {
     if (op.count === 0) return this;
     const next = this._store.alter(op.value, (existing) => {
@@ -41,17 +43,17 @@ export class HashSetDelta<T> implements Iterable<SetOperation<T>> {
     return new HashSetDelta<T>(next);
   }
 
-  /// Removes a SetOperation (i.e. adds its inverse).
+  /** Removes a SetOperation (i.e. adds its inverse). */
   remove(op: SetOperation<T>): HashSetDelta<T> {
     return this.add(op.inverse);
   }
 
-  /// Inverse of all operations.
+  /** Inverse of all operations. */
   get inverse(): HashSetDelta<T> {
     return new HashSetDelta<T>(this._store.map((_k, v) => -v));
   }
 
-  /// Combines two HashSetDeltas using a reference-counting union.
+  /** Combines two HashSetDeltas using a reference-counting union. */
   combine(other: HashSetDelta<T>): HashSetDelta<T> {
     let combined = this._store;
     for (const [k, v] of other._store) {
@@ -135,7 +137,7 @@ export class HashSetDelta<T> implements Iterable<SetOperation<T>> {
     return [...this];
   }
 
-  /// Returns the underlying HashMap. O(1).
+  /** Returns the underlying HashMap. O(1). */
   toMap(): HashMap<T, number> {
     return this._store;
   }

@@ -7,15 +7,17 @@
 // (F# original: extension methods on List<'T> in Utilities.fs)
 // ---------------------------------------------------------------------------
 
-/// Swaps the given elements inside the array.
+/** Swaps the given elements inside the array. */
 function swap<T>(heap: T[], l: number, r: number): void {
   const t = heap[l]!;
   heap[l] = heap[r]!;
   heap[r] = t;
 }
 
-/// Moves an element in the array 'up' in heap-order.
-/// Assumes that the array is in heap-order except for the given element.
+/**
+ * Moves an element in the array 'up' in heap-order.
+ * Assumes that the array is in heap-order except for the given element.
+ */
 function bubbleUp<T>(
   heap: T[],
   compare: (a: T, b: T) => number,
@@ -34,8 +36,10 @@ function bubbleUp<T>(
   }
 }
 
-/// Moves an element in the array 'down' in heap-order.
-/// Assumes that the array is in heap-order except for the given element.
+/**
+ * Moves an element in the array 'down' in heap-order.
+ * Assumes that the array is in heap-order except for the given element.
+ */
 function pushDown<T>(
   heap: T[],
   compare: (a: T, b: T) => number,
@@ -70,7 +74,7 @@ function pushDown<T>(
   }
 }
 
-/// Enqueues an element to the array in heap-order.
+/** Enqueues an element to the array in heap-order. */
 export function heapEnqueue<T>(
   heap: T[],
   compare: (a: T, b: T) => number,
@@ -81,7 +85,7 @@ export function heapEnqueue<T>(
   bubbleUp(heap, compare, index, value);
 }
 
-/// Dequeues the smallest element from the heap-order array.
+/** Dequeues the smallest element from the heap-order array. */
 export function heapDequeue<T>(
   heap: T[],
   compare: (a: T, b: T) => number,
@@ -121,9 +125,11 @@ interface Entry<V> {
   value: V;
 }
 
-/// Implements a priority queue (with int as priority) where each
-/// value (by reference) can only be enqueued once.
-/// Note that the order for 'colliding' keys is undefined.
+/**
+ * Implements a priority queue (with int as priority) where each
+ * value (by reference) can only be enqueued once.
+ * Note that the order for 'colliding' keys is undefined.
+ */
 export class TransactQueue<V extends object> {
   private readonly _heap: Entry<V>[] = [];
   private readonly _index: Map<V, Entry<V>> = new Map();
@@ -131,17 +137,17 @@ export class TransactQueue<V extends object> {
   private static readonly _cmp = (a: Entry<unknown>, b: Entry<unknown>) =>
     a.key - b.key;
 
-  /// Is the queue empty?
+  /** Is the queue empty? */
   get isEmpty(): boolean {
     return this._index.size === 0;
   }
 
-  /// Does the queue contain the given value?
+  /** Does the queue contain the given value? */
   contains(value: V): boolean {
     return this._index.has(value);
   }
 
-  /// Enqueue a key/value pair to the queue.
+  /** Enqueue a key/value pair to the queue. */
   enqueue(key: number, value: V): void {
     if (this._index.has(value)) return;
     const entry: Entry<V> = { key, value };
@@ -149,8 +155,10 @@ export class TransactQueue<V extends object> {
     heapEnqueue(this._heap, TransactQueue._cmp, entry);
   }
 
-  /// Dequeues the minimal element from the queue and returns the
-  /// key/value pair.
+  /**
+   * Dequeues the minimal element from the queue and returns the
+   * key/value pair.
+   */
   dequeue(): { key: number; value: V } {
     const entry = heapDequeue(this._heap, TransactQueue._cmp);
     this._index.delete(entry.value);

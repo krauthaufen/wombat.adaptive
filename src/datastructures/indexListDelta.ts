@@ -12,8 +12,10 @@ import {
 
 const indexCmp: KeyComparer<Index> = (a, b) => a.compareTo(b);
 
-/// A delta against an `IndexList<T>`: a sorted map from `Index` to
-/// `ElementOperation<T>`.
+/**
+ * A delta against an `IndexList<T>`: a sorted map from `Index` to
+ * `ElementOperation<T>`.
+ */
 export class IndexListDelta<T>
   implements Iterable<[Index, ElementOperation<T>]>
 {
@@ -120,8 +122,10 @@ export const IndexListDeltaOps = {
 // ---------------------------------------------------------------------------
 
 export const IndexListDeltaExt = {
-  /// Apply a delta to a list. Returns the new list and the effective
-  /// operations.
+  /**
+   * Apply a delta to a list. Returns the new list and the effective
+   * operations.
+   */
   applyDelta: <T>(
     x: IndexList<T>,
     deltas: IndexListDelta<T>,
@@ -152,8 +156,10 @@ export const IndexListDeltaExt = {
     };
   },
 
-  /// Determine the operations needed to transform `l` into `r`, with
-  /// custom add/remove/update callbacks.
+  /**
+   * Determine the operations needed to transform `l` into `r`, with
+   * custom add/remove/update callbacks.
+   */
   computeDeltaCustom: <T>(
     add: (idx: Index, v: T) => ElementOperation<T>,
     remove: (idx: Index, v: T) => ElementOperation<T>,
@@ -170,7 +176,7 @@ export const IndexListDeltaExt = {
     return IndexListDelta.ofMap(res);
   },
 
-  /// Default computeDelta — Set on add/update, Remove on delete.
+  /** Default computeDelta — Set on add/update, Remove on delete. */
   computeDelta: <T>(
     l: IndexList<T>,
     r: IndexList<T>,
@@ -184,10 +190,12 @@ export const IndexListDeltaExt = {
     );
   },
 
-  /// Determines the operations needed to transform `src` into the
-  /// given `dst` array, treating elements by user-supplied equality.
-  /// Uses the Myers diff algorithm so the returned delta is "minimal"
-  /// in edit-distance terms, reusing source Indices wherever possible.
+  /**
+   * Determines the operations needed to transform `src` into the
+   * given `dst` array, treating elements by user-supplied equality.
+   * Uses the Myers diff algorithm so the returned delta is "minimal"
+   * in edit-distance terms, reusing source Indices wherever possible.
+   */
   computeDeltaToArray: <T>(
     equals: (a: T, b: T) => boolean,
     src: IndexList<T>,
@@ -255,8 +263,10 @@ export const IndexListDeltaExt = {
     return delta;
   },
 
-  /// Same as `computeDeltaToArray` but returns the rebuilt IndexList
-  /// alongside the delta.
+  /**
+   * Same as `computeDeltaToArray` but returns the rebuilt IndexList
+   * alongside the delta.
+   */
   computeDeltaToArrayAndGetResult: <T>(
     equals: (a: T, b: T) => boolean,
     src: IndexList<T>,
@@ -267,7 +277,7 @@ export const IndexListDeltaExt = {
     return { delta, result: state };
   },
 
-  /// Convenience over `computeDeltaToArray` for an iterable / list.
+  /** Convenience over `computeDeltaToArray` for an iterable / list. */
   computeDeltaToList: <T>(
     equals: (a: T, b: T) => boolean,
     src: IndexList<T>,
@@ -298,10 +308,12 @@ const enum DeltaOp {
   Equal = 2,
 }
 
-/// Standard Myers algorithm. Returns operations in source-and-target
-/// order: Remove pops from `src`, Add takes from `dst`, Equal advances
-/// both. F# original additionally reverses the inputs to walk
-/// backwards; we keep the natural orientation.
+/**
+ * Standard Myers algorithm. Returns operations in source-and-target
+ * order: Remove pops from `src`, Add takes from `dst`, Equal advances
+ * both. F# original additionally reverses the inputs to walk
+ * backwards; we keep the natural orientation.
+ */
 function myersDiff<A, B>(
   equals: (a: A, b: B) => boolean,
   src: ReadonlyArray<readonly [unknown, A]>,

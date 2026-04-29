@@ -15,7 +15,7 @@ const UINT64_MAX = (1n << 64n) - 1n;
 const UINT64_MOD = 1n << 64n;
 const HALF = 1n << 63n;
 
-/// Wrap BigInt arithmetic into the unsigned 64-bit range.
+/** Wrap BigInt arithmetic into the unsigned 64-bit range. */
 function u64(x: bigint): bigint {
   // ((x % MOD) + MOD) % MOD — handles negatives.
   let r = x % UINT64_MOD;
@@ -23,31 +23,35 @@ function u64(x: bigint): bigint {
   return r;
 }
 
-/// Internal node in the order-maintenance cycle. Each node carries a
-/// uint64 tag; the list is kept in tag order around a cycle. New nodes
-/// are inserted between two existing nodes by averaging their tags;
-/// when two adjacent tags differ by 1 we relabel a portion of the
-/// chain to make room.
+/**
+ * Internal node in the order-maintenance cycle. Each node carries a
+ * uint64 tag; the list is kept in tag order around a cycle. New nodes
+ * are inserted between two existing nodes by averaging their tags;
+ * when two adjacent tags differ by 1 we relabel a portion of the
+ * chain to make room.
+ */
 class IndexNode {
-  /// Root-node for this cycle.
+  /** Root-node for this cycle. */
   root!: IndexNode;
-  /// Prev node in the cycle.
+  /** Prev node in the cycle. */
   prev!: IndexNode;
-  /// Next node in the cycle.
+  /** Next node in the cycle. */
   next!: IndexNode;
-  /// The current tag.
+  /** The current tag. */
   tag: bigint = 0n;
-  /// Reference count for tracking disposal.
+  /** Reference count for tracking disposal. */
   refCount = 1;
 
-  /// Sort key relative to root.
+  /** Sort key relative to root. */
   get key(): bigint {
     return u64(this.tag - this.root.tag);
   }
 
-  /// Relabel a portion of the list starting at `start` until
-  /// distance(start, current) >= cnt^2 + 1. Amortised O(log N) per
-  /// insert.
+  /**
+   * Relabel a portion of the list starting at `start` until
+   * distance(start, current) >= cnt^2 + 1. Amortised O(log N) per
+   * insert.
+   */
   private static relabel(start: IndexNode): bigint {
     const all: IndexNode[] = [];
 
@@ -83,7 +87,7 @@ class IndexNode {
     return step;
   }
 
-  /// Insert a node directly after this one.
+  /** Insert a node directly after this one. */
   insertAfter(): IndexNode {
     const next = this.next;
 
@@ -106,7 +110,7 @@ class IndexNode {
     return res;
   }
 
-  /// Decrement refCount; remove from cycle when zero.
+  /** Decrement refCount; remove from cycle when zero. */
   delete(): void {
     if (this.refCount === 1) {
       this.prev.next = this.next;
@@ -146,9 +150,11 @@ class IndexNode {
   }
 }
 
-/// Datastructure representing an abstract index.
-/// Supported operations: `zero`, `after`, `before`, `between`.
-/// O(log N) insert (amortised), O(1) delete, O(1) compare.
+/**
+ * Datastructure representing an abstract index.
+ * Supported operations: `zero`, `after`, `before`, `between`.
+ * O(log N) insert (amortised), O(1) delete, O(1) compare.
+ */
 export class Index {
   /** @internal */
   readonly _real: IndexNode;
@@ -157,7 +163,7 @@ export class Index {
     this._real = real;
   }
 
-  /// Returns an Index immediately after this one.
+  /** Returns an Index immediately after this one. */
   after(): Index {
     const next = this._real.next;
     if (next !== this._real.root) {
@@ -167,7 +173,7 @@ export class Index {
     return new Index(this._real.insertAfter());
   }
 
-  /// Returns an Index immediately before this one.
+  /** Returns an Index immediately before this one. */
   before(): Index {
     const prev = this._real.prev;
     if (prev === this._real.root) {
@@ -177,7 +183,7 @@ export class Index {
     return new Index(prev);
   }
 
-  /// Returns an Index strictly between this and `r`.
+  /** Returns an Index strictly between this and `r`. */
   between(r: Index): Index {
     const l = this._real;
     const right = r._real;
@@ -218,7 +224,7 @@ export class Index {
 // ---------------------------------------------------------------------------
 
 const _rootNode = new IndexNode(null);
-/// The root index.
+/** The root index. */
 export const indexZero: Index = Index.fromNode(_rootNode);
 
 export const IndexOps = {

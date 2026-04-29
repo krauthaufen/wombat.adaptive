@@ -28,7 +28,7 @@ import { LevelChangedException } from "./transaction.js";
 // CallbackDisposable
 // ---------------------------------------------------------------------------
 
-/// PORT NOTE: module-level strong root set replacing F# `GCHandle.Alloc`.
+/** PORT NOTE: module-level strong root set replacing F# `GCHandle.Alloc`. */
 const _strongRoots: Set<CallbackDisposable> = new Set();
 
 class CallbackDisposable {
@@ -61,7 +61,7 @@ class CallbackDisposable {
   }
 }
 
-/// Public disposable interface for callback subscriptions.
+/** Public disposable interface for callback subscriptions. */
 export interface IDisposable {
   dispose(): void;
 }
@@ -72,7 +72,7 @@ export interface IDisposable {
 
 const _emptyOutputs: IWeakOutputSet = new EmptyOutputSet();
 
-/// Represents an object providing callbacks in the dependency-tree.
+/** Represents an object providing callbacks in the dependency-tree. */
 class MultiCallbackObject implements IAdaptiveObject {
   private readonly _table: WeakMap<IAdaptiveObject, MultiCallbackObject>;
   private _id = 0;
@@ -134,8 +134,10 @@ class MultiCallbackObject implements IAdaptiveObject {
     return this._id;
   }
 
-  /// this function checks to see if we need to release resources if
-  /// there are no active callbacks anymore
+  /**
+   * this function checks to see if we need to release resources if
+   * there are no active callbacks anymore
+   */
   private check(): boolean {
     // we don't need a lock here because we are using obj being null to
     // indicate this is a dead object
@@ -162,9 +164,11 @@ class MultiCallbackObject implements IAdaptiveObject {
     this.check();
   }
 
-  /// adds a callback to the object. The returned IDisposable removes
-  /// the callback. The `weak` parameter controls whether the callback
-  /// keeps itself alive (false → strong, true → weak).
+  /**
+   * adds a callback to the object. The returned IDisposable removes
+   * the callback. The `weak` parameter controls whether the callback
+   * keeps itself alive (false → strong, true → weak).
+   */
   subscribe(weak: boolean, cb: () => boolean): IDisposable {
     // F# original: `lock x (fun () -> ...)`. Removed.
     if (this._obj === null) {
@@ -213,11 +217,11 @@ class MultiCallbackObject implements IAdaptiveObject {
 // Public callback API
 // ---------------------------------------------------------------------------
 
-/// cache for MultiCallbackObjects per IAdaptiveObject
+/** cache for MultiCallbackObjects per IAdaptiveObject */
 const _callbackObjects: WeakMap<IAdaptiveObject, MultiCallbackObject> =
   new WeakMap();
 
-/// utility getting/creating a MultiCallbackObject for the given IAdaptiveObject
+/** utility getting/creating a MultiCallbackObject for the given IAdaptiveObject */
 function setMultiCallback(
   o: IAdaptiveObject,
   weak: boolean,
@@ -232,10 +236,12 @@ function setMultiCallback(
   return cbo.subscribe(weak, callback);
 }
 
-/// Registers a callback with the given object that will be executed
-/// whenever the object gets marked out-of-date. Does not trigger when
-/// the object is currently out-of-date. Returns a disposable for
-/// removing the callback.
+/**
+ * Registers a callback with the given object that will be executed
+ * whenever the object gets marked out-of-date. Does not trigger when
+ * the object is currently out-of-date. Returns a disposable for
+ * removing the callback.
+ */
 export function addMarkingCallback(
   o: IAdaptiveObject,
   callback: () => void,
@@ -246,8 +252,10 @@ export function addMarkingCallback(
   });
 }
 
-/// Same as addMarkingCallback but holds the callback weakly — if the
-/// caller drops the reference, the callback is collected.
+/**
+ * Same as addMarkingCallback but holds the callback weakly — if the
+ * caller drops the reference, the callback is collected.
+ */
 export function addWeakMarkingCallback(
   o: IAdaptiveObject,
   callback: () => void,
@@ -258,8 +266,10 @@ export function addWeakMarkingCallback(
   });
 }
 
-/// Registers a callback that will fire ONCE when the next out-of-date
-/// marking visits the object.
+/**
+ * Registers a callback that will fire ONCE when the next out-of-date
+ * marking visits the object.
+ */
 export function onNextMarking(
   o: IAdaptiveObject,
   callback: () => void,
@@ -275,7 +285,7 @@ export function onNextMarking(
   });
 }
 
-/// Same as onNextMarking but holds the callback weakly.
+/** Same as onNextMarking but holds the callback weakly. */
 export function onWeakNextMarking(
   o: IAdaptiveObject,
   callback: () => void,

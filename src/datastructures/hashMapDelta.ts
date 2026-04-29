@@ -3,7 +3,7 @@
 import { HashMap } from "./hashCollections.js";
 import type { ElementOperation } from "./operations.js";
 
-/// Represents the difference of two HashMaps.
+/** Represents the difference of two HashMaps. */
 export class HashMapDelta<K, V> implements Iterable<[K, ElementOperation<V>]> {
   private readonly _store: HashMap<K, ElementOperation<V>>;
 
@@ -12,7 +12,7 @@ export class HashMapDelta<K, V> implements Iterable<[K, ElementOperation<V>]> {
     this._store = store;
   }
 
-  /// The internal store used by the HashMapDelta.
+  /** The internal store used by the HashMapDelta. */
   get store(): HashMap<K, ElementOperation<V>> {
     return this._store;
   }
@@ -25,7 +25,7 @@ export class HashMapDelta<K, V> implements Iterable<[K, ElementOperation<V>]> {
     return this._store.count;
   }
 
-  /// Combines two HashMapDeltas to one.
+  /** Combines two HashMapDeltas to one. */
   combine(other: HashMapDelta<K, V>): HashMapDelta<K, V> {
     return new HashMapDelta<K, V>(this._store.unionWith(other._store));
   }

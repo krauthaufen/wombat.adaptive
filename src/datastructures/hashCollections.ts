@@ -31,12 +31,12 @@ import {
 // HashNumberCrunching — bit-twiddling primitives
 // ---------------------------------------------------------------------------
 
-/// Mix two 32-bit hash values.
+/** Mix two 32-bit hash values. */
 function combineHash(a: number, b: number): number {
   return (((a ^ b) + 0x9e3779b9) + (a << 6) + (a >>> 2)) | 0;
 }
 
-/// Returns the most-significant bit set in `x` (e.g. 0b00101100 -> 0b00100000).
+/** Returns the most-significant bit set in `x` (e.g. 0b00101100 -> 0b00100000). */
 function highestBitMask(x: number): number {
   let v = x >>> 0;
   v = v | (v >>> 1);
@@ -47,19 +47,19 @@ function highestBitMask(x: number): number {
   return (v ^ (v >>> 1)) >>> 0;
 }
 
-/// Returns `k` with all bits at or below `m` cleared.
+/** Returns `k` with all bits at or below `m` cleared. */
 function getPrefix(k: number, m: number): number {
   // F#: k & ~((m << 1) - 1)
   const allBelow = (((m << 1) >>> 0) - 1) >>> 0;
   return (k & ~allBelow) >>> 0;
 }
 
-/// 0 if bit `m` is clear in `k`, 1 if set.
+/** 0 if bit `m` is clear in `k`, 1 if set. */
 function zeroBit(k: number, m: number): number {
   return (k & m) !== 0 ? 1 : 0;
 }
 
-/// 0 / 1 if `hash` falls inside `prefix`/`m`, else 2 (the "doesn't match" branch).
+/** 0 / 1 if `hash` falls inside `prefix`/`m`, else 2 (the "doesn't match" branch). */
 function matchPrefixAndGetBit(
   hash: number,
   prefix: number,
@@ -69,8 +69,10 @@ function matchPrefixAndGetBit(
   return 2;
 }
 
-/// F# returns `compare r l` (note swapped order — bigger mask first).
-/// Compares uint32 values.
+/**
+ * F# returns `compare r l` (note swapped order — bigger mask first).
+ * Compares uint32 values.
+ */
 function compareMasks(l: number, m: number): number {
   const lu = l >>> 0;
   const mu = m >>> 0;
@@ -79,7 +81,7 @@ function compareMasks(l: number, m: number): number {
   return 0;
 }
 
-/// Mask isolating the highest bit at which `p0` and `p1` differ.
+/** Mask isolating the highest bit at which `p0` and `p1` differ. */
 function getMask(p0: number, p1: number): number {
   return highestBitMask(((p0 ^ p1) >>> 0));
 }
@@ -88,7 +90,7 @@ function getMask(p0: number, p1: number): number {
 // Linked-list collision chains
 // ---------------------------------------------------------------------------
 
-/// Linked list of keys sharing the same hash (collision chain on the leaf).
+/** Linked list of keys sharing the same hash (collision chain on the leaf). */
 class SetLinked<K> {
   key: K;
   setNext: SetLinked<K> | null;
@@ -99,9 +101,11 @@ class SetLinked<K> {
   }
 }
 
-/// Linked list of (key, value) pairs sharing the same hash. Inherits
-/// from SetLinked to mirror F#'s subclass relationship — `mapNext`
-/// downcasts `setNext` to `MapLinked` when iterating maps.
+/**
+ * Linked list of (key, value) pairs sharing the same hash. Inherits
+ * from SetLinked to mirror F#'s subclass relationship — `mapNext`
+ * downcasts `setNext` to `MapLinked` when iterating maps.
+ */
 class MapLinked<K, V> extends SetLinked<K> {
   value: V;
 
@@ -260,7 +264,7 @@ const SetLinkedOps = {
     return SetLinkedOps.filter(predicate, n.setNext);
   },
 
-  /// Removes the first match. Returns [removed, newList].
+  /** Removes the first match. Returns [removed, newList]. */
   tryRemove<K>(
     cmp: IEqualityComparer<K>,
     key: K,
@@ -1668,8 +1672,10 @@ const SetNodeOps = {
     return false;
   },
 
-  /// Computes a SetNode (actually MapLeaf-shaped, i.e. a delta map)
-  /// representing the per-key delta from `na` to `nb`.
+  /**
+   * Computes a SetNode (actually MapLeaf-shaped, i.e. a delta map)
+   * representing the per-key delta from `na` to `nb`.
+   */
   computeDelta<K, OP>(
     cmp: IEqualityComparer<K>,
     onlyLeft: (k: K) => OP | undefined,
@@ -2955,7 +2961,7 @@ export class HashSet<K> implements Iterable<K> {
     }
   }
 
-  /// Structural hash — order-independent, matches `setEquals`.
+  /** Structural hash — order-independent, matches `setEquals`. */
   getHash(): number {
     return SetNodeOps.hash(0, this._root);
   }
@@ -3119,14 +3125,18 @@ export class HashMap<K, V> implements Iterable<[K, V]> {
     return this.alter(key, update);
   }
 
-  /// Like `alter` but cannot remove. Receives the existing value (or
-  /// undefined) and must return a value to set.
+  /**
+   * Like `alter` but cannot remove. Receives the existing value (or
+   * undefined) and must return a value to set.
+   */
   update(key: K, mapping: (existing: V | undefined) => V): HashMap<K, V> {
     return this.alter(key, mapping);
   }
 
-  /// Pairs this map's values with `other`'s, calling `mapping` for
-  /// every key in either map.
+  /**
+   * Pairs this map's values with `other`'s, calling `mapping` for
+   * every key in either map.
+   */
   map2<T, U>(
     other: HashMap<K, T>,
     mapping: (k: K, v: V | undefined, t: T | undefined) => U,
@@ -3200,8 +3210,10 @@ export class HashMap<K, V> implements Iterable<[K, V]> {
     return n;
   }
 
-  /// `choose2V`: combine two maps with a per-key resolver. Linear in the
-  /// union of keys.
+  /**
+   * `choose2V`: combine two maps with a per-key resolver. Linear in the
+   * union of keys.
+   */
   choose2V<T, U>(
     other: HashMap<K, T>,
     mapping: (k: K, v: V | undefined, t: T | undefined) => U | undefined,
@@ -3329,9 +3341,11 @@ export class HashMap<K, V> implements Iterable<[K, V]> {
     return MapNodeOps.equals<K, V>(this._cmp, this._root, other._root);
   }
 
-  /// Structural hash — matches the equality contract on
-  /// {key, value count, hash bucket layout}. Stable across
-  /// insertion-order variations.
+  /**
+   * Structural hash — matches the equality contract on
+   * {key, value count, hash bucket layout}. Stable across
+   * insertion-order variations.
+   */
   getHash(): number {
     return SetNodeOps.hash(0, this._root);
   }
