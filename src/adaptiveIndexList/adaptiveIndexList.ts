@@ -1083,6 +1083,159 @@ class PairwiseReader<A> extends AbstractStatefulReader<
 // Reductions
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// ReduceValueAList — incremental reduction over alist values.
+// Mirrors F#'s AdaptiveIndexList.Reductions.ReduceValue.
+// ---------------------------------------------------------------------------
+
+class ReduceValueAList<T, S, V> extends AbstractVal<V> {
+  private readonly _reduction: AdaptiveReduction<T, S, V>;
+  private readonly _reader: IIndexListReader<T>;
+  private _state: IndexList<T> = IndexList.empty<T>();
+  private _sum: S;
+
+  constructor(reduction: AdaptiveReduction<T, S, V>, list: alist<T>) {
+    super();
+    this._reduction = reduction;
+    this._reader = list.getReader();
+    this._sum = reduction.seed;
+  }
+
+  override compute(tok: AdaptiveToken): V {
+    const ops = this._reader.getChanges(tok);
+    const stateCount = this._reader.state.count;
+
+    if (stateCount <= 2 || stateCount <= ops.count) {
+      this._state = this._reader.state;
+      let s = this._reduction.seed;
+      for (const v of this._state) s = this._reduction.add(s, v);
+      this._sum = s;
+      return this._reduction.view(s);
+    }
+
+    let working = true;
+    for (const [index, op] of ops) {
+      if (!working) break;
+      if (op.tag === "Set") {
+        const old = this._state.tryGetByIndex(index);
+        if (old !== undefined) {
+          const r = this._reduction.sub(this._sum, old);
+          if (r === undefined) {
+            working = false;
+          } else {
+            this._sum = r;
+          }
+        }
+        this._sum = this._reduction.add(this._sum, op.value);
+        this._state = this._state.setByIndex(index, op.value);
+      } else {
+        const old = this._state.tryGetByIndex(index);
+        if (old !== undefined) {
+          this._state = this._state.removeByIndex(index);
+          const r = this._reduction.sub(this._sum, old);
+          if (r === undefined) {
+            working = false;
+          } else {
+            this._sum = r;
+          }
+        }
+      }
+    }
+
+    if (!working) {
+      this._state = this._reader.state;
+      let s = this._reduction.seed;
+      for (const v of this._state) s = this._reduction.add(s, v);
+      this._sum = s;
+    }
+    return this._reduction.view(this._sum);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ReduceByValueAList — incremental reduction with sync (i,v)→b mapping.
+// Mirrors F#'s AdaptiveIndexList.Reductions.ReduceByValue.
+// ---------------------------------------------------------------------------
+
+class ReduceByValueAList<A, B, S, V> extends AbstractVal<V> {
+  private readonly _reduction: AdaptiveReduction<B, S, V>;
+  private readonly _mapping: (i: Index, a: A) => B;
+  private readonly _reader: IIndexListReader<A>;
+  // Per-index entry: (input value, mapped value).
+  private _state: IndexList<[A, B]> = IndexList.empty<[A, B]>();
+  private _sum: S | undefined;
+
+  constructor(
+    reduction: AdaptiveReduction<B, S, V>,
+    mapping: (i: Index, a: A) => B,
+    list: alist<A>,
+  ) {
+    super();
+    this._reduction = reduction;
+    this._mapping = mapping;
+    this._reader = list.getReader();
+    this._sum = reduction.seed;
+  }
+
+  private add(s: S | undefined, v: B): S | undefined {
+    if (s === undefined) return undefined;
+    return this._reduction.add(s, v);
+  }
+  private sub(s: S | undefined, v: B): S | undefined {
+    if (s === undefined) return undefined;
+    return this._reduction.sub(s, v);
+  }
+
+  override compute(tok: AdaptiveToken): V {
+    const ops = this._reader.getChanges(tok);
+    const stateCount = this._reader.state.count;
+
+    if (stateCount <= 2 || stateCount <= ops.count) {
+      // Bulk recompute, reusing cached mappings for unchanged input
+      // values (F# `tryGetV` + DefaultEquality.equals).
+      let newState = IndexList.empty<[A, B]>();
+      for (const [k, a] of this._reader.state.toListIndexed()) {
+        const cur = this._state.tryGetByIndex(k);
+        if (cur !== undefined && Object.is(cur[0], a)) {
+          newState = newState.setByIndex(k, cur);
+        } else {
+          const b = this._mapping(k, a);
+          newState = newState.setByIndex(k, [a, b]);
+        }
+      }
+      this._state = newState;
+      let s = this._reduction.seed;
+      for (const [, b] of newState) s = this._reduction.add(s, b);
+      this._sum = s;
+      return this._reduction.view(s);
+    }
+
+    for (const [index, op] of ops) {
+      if (op.tag === "Set") {
+        const cur = this._state.tryGetByIndex(index);
+        if (cur !== undefined && Object.is(cur[0], op.value)) continue;
+        if (cur !== undefined) this._sum = this.sub(this._sum, cur[1]);
+        const b = this._mapping(index, op.value);
+        this._sum = this.add(this._sum, b);
+        this._state = this._state.setByIndex(index, [op.value, b]);
+      } else {
+        const cur = this._state.tryGetByIndex(index);
+        if (cur !== undefined) {
+          this._state = this._state.removeByIndex(index);
+          this._sum = this.sub(this._sum, cur[1]);
+        }
+      }
+    }
+
+    if (this._sum === undefined) {
+      let s = this._reduction.seed;
+      for (const [, b] of this._state) s = this._reduction.add(s, b);
+      this._sum = s;
+    }
+    return this._reduction.view(this._sum);
+  }
+}
+
 class AdaptiveReduceByValueAList<A, B, S, V> extends AbstractVal<V> {
   private readonly _reduction: AdaptiveReduction<B, S, V>;
   private readonly _mapping: (i: Index, a: A) => aval<B>;
@@ -1631,27 +1784,32 @@ export function count<T>(list: alist<T>): aval<number> {
 
 // Reductions ----------------------------------------------------------------
 
+/**
+ * Adaptively reduces the list using the given `AdaptiveReduction`.
+ * Incremental: applies `add`/`sub` per delta op, only bulk-recomputes
+ * when the delta is bigger than the state or `sub` fails.
+ * Mirrors F#'s `AdaptiveIndexList.Reductions.ReduceValue`.
+ */
 export function reduce<T, S, V>(
   reduction: AdaptiveReduction<T, S, V>,
   list: alist<T>,
 ): aval<V> {
-  return AVal.map(list.content, (s) => {
-    let acc = reduction.seed;
-    s.iter((_i, v) => (acc = reduction.add(acc, v)));
-    return reduction.view(acc);
-  });
+  return new ReduceValueAList<T, S, V>(reduction, list);
 }
 
+/**
+ * Adaptively reduces the list after mapping each entry through a
+ * synchronous `mapping`. Maintains a per-index cache of (input value,
+ * mapped value) and adds/subtracts incrementally per delta op,
+ * only re-running `mapping` when the input value changes.
+ * Mirrors F#'s `AdaptiveIndexList.Reductions.ReduceByValue`.
+ */
 export function reduceBy<A, B, S, V>(
   reduction: AdaptiveReduction<B, S, V>,
   mapping: (i: Index, a: A) => B,
   list: alist<A>,
 ): aval<V> {
-  return AVal.map(list.content, (s) => {
-    let acc = reduction.seed;
-    s.iter((i, v) => (acc = reduction.add(acc, mapping(i, v))));
-    return reduction.view(acc);
-  });
+  return new ReduceByValueAList<A, B, S, V>(reduction, mapping, list);
 }
 
 export function reduceByA<A, B, S, V>(
@@ -1771,6 +1929,36 @@ export function averageByA<T>(
   return reduceByA(Reductions.average, (_i, v) => mapping(v), list);
 }
 
+/**
+ * Adaptively the smallest element (or `undefined`). Incremental via
+ * `reduce` with `AdaptiveReduction.tryMin`. Mirrors F#'s `tryMin`.
+ */
+export function tryMin<T>(
+  list: alist<T>,
+  compare?: (a: T, b: T) => number,
+): aval<T | undefined> {
+  const cmp = compare ?? ((a: T, b: T) => (a < b ? -1 : a > b ? 1 : 0));
+  return reduce<T, T | undefined, T | undefined>(
+    Reductions.tryMin(cmp),
+    list,
+  );
+}
+
+/**
+ * Adaptively the largest element (or `undefined`). Incremental via
+ * `reduce` with `AdaptiveReduction.tryMax`. Mirrors F#'s `tryMax`.
+ */
+export function tryMax<T>(
+  list: alist<T>,
+  compare?: (a: T, b: T) => number,
+): aval<T | undefined> {
+  const cmp = compare ?? ((a: T, b: T) => (a < b ? -1 : a > b ? 1 : 0));
+  return reduce<T, T | undefined, T | undefined>(
+    Reductions.tryMax(cmp),
+    list,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // AList namespace export
 // ---------------------------------------------------------------------------
@@ -1849,5 +2037,7 @@ export const AList = {
   average,
   averageBy,
   averageByA,
+  tryMin,
+  tryMax,
 };
 

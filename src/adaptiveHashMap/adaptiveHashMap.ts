@@ -1259,30 +1259,32 @@ export function count<K, V>(m: amap<K, V>): aval<number> {
   return AVal.map(m.content, (s: HashMap<K, V>) => s.count);
 }
 
+/**
+ * Adaptively reduces the map using the given `AdaptiveReduction`.
+ * Incremental: applies `add`/`sub` per delta op, only bulk-recomputes
+ * when the delta is bigger than the state or `sub` fails.
+ * Mirrors F#'s `MapReductions.ReduceValue`.
+ */
 export function reduce<K, V, S, R>(
   reduction: AdaptiveReduction<V, S, R>,
   m: amap<K, V>,
 ): aval<R> {
-  return AVal.map(m.content, (s: HashMap<K, V>) =>
-    reduction.view(
-      s.fold((acc, _k, v) => reduction.add(acc, v), reduction.seed),
-    ),
-  );
+  return new ReduceValueAMap<K, V, S, R>(reduction, m);
 }
 
+/**
+ * Adaptively reduces the map after mapping each entry through a
+ * synchronous `mapping`. Maintains a per-key cache of (input value,
+ * mapped value) and adds/subtracts incrementally per delta op,
+ * only re-running `mapping` when the input value changes.
+ * Mirrors F#'s `MapReductions.ReduceByValue`.
+ */
 export function reduceBy<K, V1, V2, S, R>(
   reduction: AdaptiveReduction<V2, S, R>,
   mapping: (k: K, v: V1) => V2,
   m: amap<K, V1>,
 ): aval<R> {
-  return AVal.map(m.content, (s: HashMap<K, V1>) =>
-    reduction.view(
-      s.fold(
-        (acc, k, v) => reduction.add(acc, mapping(k, v)),
-        reduction.seed,
-      ),
-    ),
-  );
+  return new ReduceByValueAMap<K, V1, V2, S, R>(reduction, mapping, m);
 }
 
 export function reduceByA<K, V1, V2, S, R>(
@@ -1291,6 +1293,162 @@ export function reduceByA<K, V1, V2, S, R>(
   m: amap<K, V1>,
 ): aval<R> {
   return new AdaptiveReduceByValueAMap<K, V1, V2, S, R>(reduction, mapping, m);
+}
+
+// ---------------------------------------------------------------------------
+// ReduceValueAMap — incremental reduction over amap values.
+// Mirrors F#'s MapReductions.ReduceValue (AdaptiveHashMap.fs).
+// ---------------------------------------------------------------------------
+
+class ReduceValueAMap<K, V, S, R> extends AbstractVal<R> {
+  private readonly _reduction: AdaptiveReduction<V, S, R>;
+  private readonly _reader: IHashMapReader<K, V>;
+  // Mirrors the F# `mutable state = HashMap.empty<'k, 'a>` — kept in
+  // lockstep with `sum` during incremental updates so we have a
+  // reliable handle for sub() lookups.
+  private _state: HashMap<K, V> = HashMap.empty<K, V>();
+  private _sum: S;
+
+  constructor(reduction: AdaptiveReduction<V, S, R>, m: amap<K, V>) {
+    super();
+    this._reduction = reduction;
+    this._reader = m.getReader();
+    this._sum = reduction.seed;
+  }
+
+  override compute(tok: AdaptiveToken): R {
+    const ops = this._reader.getChanges(tok);
+    const stateCount = this._reader.state.count;
+
+    if (stateCount <= 2 || stateCount <= ops.count) {
+      this._state = this._reader.state;
+      let s = this._reduction.seed;
+      for (const [, v] of this._state) s = this._reduction.add(s, v);
+      this._sum = s;
+      return this._reduction.view(s);
+    }
+
+    let working = true;
+    for (const [i, op] of ops) {
+      if (!working) break;
+      if (op.tag === "Set") {
+        const old = this._state.tryFind(i);
+        if (old !== undefined) {
+          const r = this._reduction.sub(this._sum, old);
+          if (r === undefined) {
+            working = false;
+          } else {
+            this._sum = r;
+          }
+        }
+        this._sum = this._reduction.add(this._sum, op.value);
+        this._state = this._state.add(i, op.value);
+      } else {
+        const old = this._state.tryFind(i);
+        if (old !== undefined) {
+          this._state = this._state.remove(i);
+          const r = this._reduction.sub(this._sum, old);
+          if (r === undefined) {
+            working = false;
+          } else {
+            this._sum = r;
+          }
+        }
+      }
+    }
+
+    if (!working) {
+      this._state = this._reader.state;
+      let s = this._reduction.seed;
+      for (const [, v] of this._state) s = this._reduction.add(s, v);
+      this._sum = s;
+    }
+    return this._reduction.view(this._sum);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ReduceByValueAMap — incremental reduction with sync (k,v)→b mapping.
+// Mirrors F#'s MapReductions.ReduceByValue (AdaptiveHashMap.fs).
+// ---------------------------------------------------------------------------
+
+class ReduceByValueAMap<K, A, B, S, R> extends AbstractVal<R> {
+  private readonly _reduction: AdaptiveReduction<B, S, R>;
+  private readonly _mapping: (k: K, a: A) => B;
+  private readonly _reader: IHashMapReader<K, A>;
+  // Per key: (input value, mapped value).
+  private _state: HashMap<K, [A, B]> = HashMap.empty<K, [A, B]>();
+  private _sum: S | undefined;
+
+  constructor(
+    reduction: AdaptiveReduction<B, S, R>,
+    mapping: (k: K, a: A) => B,
+    m: amap<K, A>,
+  ) {
+    super();
+    this._reduction = reduction;
+    this._mapping = mapping;
+    this._reader = m.getReader();
+    this._sum = reduction.seed;
+  }
+
+  private add(s: S | undefined, v: B): S | undefined {
+    if (s === undefined) return undefined;
+    return this._reduction.add(s, v);
+  }
+  private sub(s: S | undefined, v: B): S | undefined {
+    if (s === undefined) return undefined;
+    return this._reduction.sub(s, v);
+  }
+
+  override compute(tok: AdaptiveToken): R {
+    const ops = this._reader.getChanges(tok);
+    const stateCount = this._reader.state.count;
+
+    if (stateCount <= 2 || stateCount <= ops.count) {
+      // Bulk recompute, reusing cached mappings for keys whose input
+      // value didn't change. Mirrors F# tryFindV / equals on `a`.
+      let newState = HashMap.empty<K, [A, B]>();
+      for (const [k, a] of this._reader.state) {
+        const cur = this._state.tryFind(k);
+        if (cur !== undefined && Object.is(cur[0], a)) {
+          newState = newState.add(k, cur);
+        } else {
+          const b = this._mapping(k, a);
+          newState = newState.add(k, [a, b]);
+        }
+      }
+      let s = this._reduction.seed;
+      for (const [, [, v]] of newState) s = this._reduction.add(s, v);
+      this._state = newState;
+      this._sum = s;
+      return this._reduction.view(s);
+    }
+
+    for (const [i, op] of ops) {
+      if (op.tag === "Set") {
+        const cur = this._state.tryFind(i);
+        if (cur !== undefined && Object.is(cur[0], op.value)) continue;
+        if (cur !== undefined) this._sum = this.sub(this._sum, cur[1]);
+        const b = this._mapping(i, op.value);
+        this._sum = this.add(this._sum, b);
+        this._state = this._state.add(i, [op.value, b]);
+      } else {
+        const cur = this._state.tryFind(i);
+        if (cur !== undefined) {
+          this._state = this._state.remove(i);
+          this._sum = this.sub(this._sum, cur[1]);
+        }
+      }
+    }
+
+    if (this._sum === undefined) {
+      let s = this._reduction.seed;
+      for (const [, [, v]] of this._state) s = this._reduction.add(s, v);
+      this._sum = s;
+    }
+    return this._reduction.view(this._sum);
+  }
 }
 
 // ---------------------------------------------------------------------------

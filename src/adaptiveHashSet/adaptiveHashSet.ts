@@ -1063,32 +1063,209 @@ export function count<T>(set: aset<T>): aval<number> {
 }
 
 /** Adaptively checks whether `value` is in the set. */
+/**
+ * Adaptively whether the set contains `value`. Incremental:
+ * tracks a refCount for `value` across deltas and reports
+ * `refCount > 0`. Mirrors F#'s `SetReductions.ContainsValue`.
+ */
 export function contains<T>(value: T, set: aset<T>): aval<boolean> {
-  return set.content.map((s) => s.contains(value));
+  return new ContainsValueASet<T>(set, value);
 }
 
-/** Adaptively checks all entries with a predicate. */
+class ContainsValueASet<T> extends AbstractVal<boolean> {
+  private readonly _reader: IHashSetReader<T>;
+  private readonly _value: T;
+  private _refCount = 0;
+  constructor(input: aset<T>, value: T) {
+    super();
+    this._reader = input.getReader();
+    this._value = value;
+  }
+  override compute(tok: AdaptiveToken): boolean {
+    const ops = this._reader.getChanges(tok).store;
+    const delta = ops.tryFind(this._value);
+    if (delta !== undefined) this._refCount += delta;
+    return this._refCount > 0;
+  }
+}
+
+/**
+ * Adaptively checks whether the predicate holds for all entries.
+ * Mirrors F#: `reduceBy (countNegative |> mapOut (= 0)) predicate set`.
+ */
 export function forall<T>(
   predicate: (t: T) => boolean,
   set: aset<T>,
 ): aval<boolean> {
-  return set.content.map((s) => s.forall(predicate));
+  return reduceBy<T, boolean, number, boolean>(
+    Reductions.mapOut((n: number) => n === 0, Reductions.countNegative),
+    predicate,
+    set,
+  );
 }
 
-/** Adaptively checks for an entry satisfying the predicate. */
+/**
+ * Adaptively checks whether the predicate holds for at least one
+ * entry. Mirrors F#: `reduceBy (countPositive |> mapOut (<> 0)) predicate set`.
+ */
 export function exists<T>(
   predicate: (t: T) => boolean,
   set: aset<T>,
 ): aval<boolean> {
-  return set.content.map((s) => s.exists(predicate));
+  return reduceBy<T, boolean, number, boolean>(
+    Reductions.mapOut((n: number) => n !== 0, Reductions.countPositive),
+    predicate,
+    set,
+  );
 }
 
-/** Adaptively counts elements matching the predicate. */
+/**
+ * Adaptively counts elements where the predicate holds. Mirrors F#:
+ * `reduceBy countPositive predicate set`.
+ */
 export function countBy<T>(
   predicate: (t: T) => boolean,
   set: aset<T>,
 ): aval<number> {
-  return set.content.map((s) => s.fold((acc, v) => (predicate(v) ? acc + 1 : acc), 0));
+  return reduceBy<T, boolean, number, number>(
+    Reductions.countPositive,
+    predicate,
+    set,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ReduceValueASet — incremental reduction over set elements.
+// Mirrors F#'s SetReductions.ReduceValue (AdaptiveHashSet.fs).
+// ---------------------------------------------------------------------------
+
+class ReduceValueASet<T, S, V> extends AbstractVal<V> {
+  private readonly _reduction: AdaptiveReduction<T, S, V>;
+  private readonly _reader: IHashSetReader<T>;
+  // F# `mutable sum : 's` (always-valid). The bulk-recompute branch
+  // resets `sum`; the incremental branch breaks out via `working`.
+  private _sum: S;
+
+  constructor(reduction: AdaptiveReduction<T, S, V>, set: aset<T>) {
+    super();
+    this._reduction = reduction;
+    this._reader = set.getReader();
+    this._sum = reduction.seed;
+  }
+
+  override compute(tok: AdaptiveToken): V {
+    const ops = this._reader.getChanges(tok);
+    const stateCount = this._reader.state.count;
+
+    if (stateCount <= 2 || stateCount <= ops.count) {
+      // Bulk recompute (F# `if reader.State.Count <= 2 || ... then`).
+      let s = this._reduction.seed;
+      for (const v of this._reader.state) s = this._reduction.add(s, v);
+      this._sum = s;
+    } else {
+      let working = true;
+      for (const op of ops) {
+        if (!working) break;
+        if (op.count === 1) {
+          this._sum = this._reduction.add(this._sum, op.value);
+        } else if (op.count === -1) {
+          const r = this._reduction.sub(this._sum, op.value);
+          if (r === undefined) {
+            working = false;
+          } else {
+            this._sum = r;
+          }
+        }
+      }
+      if (!working) {
+        // Inverse failed — recompute from the current set state.
+        let s = this._reduction.seed;
+        for (const v of this._reader.state) s = this._reduction.add(s, v);
+        this._sum = s;
+      }
+    }
+    return this._reduction.view(this._sum);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ReduceByValueASet — incremental reduction with sync element mapping.
+// Mirrors F#'s SetReductions.ReduceByValue (AdaptiveHashSet.fs).
+// ---------------------------------------------------------------------------
+
+class ReduceByValueASet<T, B, S, V> extends AbstractVal<V> {
+  private readonly _reduction: AdaptiveReduction<B, S, V>;
+  private readonly _mapping: (t: T) => B;
+  private readonly _reader: IHashSetReader<T>;
+  private _state: HashMap<T, B> = HashMap.empty<T, B>();
+  private _sum: S | undefined;
+
+  constructor(
+    reduction: AdaptiveReduction<B, S, V>,
+    mapping: (t: T) => B,
+    set: aset<T>,
+  ) {
+    super();
+    this._reduction = reduction;
+    this._mapping = mapping;
+    this._reader = set.getReader();
+    this._sum = reduction.seed;
+  }
+
+  private add(s: S | undefined, v: B): S | undefined {
+    if (s === undefined) return undefined;
+    return this._reduction.add(s, v);
+  }
+  private sub(s: S | undefined, v: B): S | undefined {
+    if (s === undefined) return undefined;
+    return this._reduction.sub(s, v);
+  }
+
+  override compute(tok: AdaptiveToken): V {
+    const ops = this._reader.getChanges(tok);
+    const stateCount = this._reader.state.count;
+
+    if (stateCount <= 2 || stateCount <= ops.count) {
+      // Bulk recompute path: rebuild state by reusing cached mappings
+      // for unchanged elements.
+      let newState = HashMap.empty<T, B>();
+      for (const a of this._reader.state) {
+        const cached = this._state.tryFind(a);
+        const b = cached !== undefined ? cached : this._mapping(a);
+        newState = newState.add(a, b);
+      }
+      let s = this._reduction.seed;
+      for (const [, v] of newState) s = this._reduction.add(s, v);
+      this._state = newState;
+      this._sum = s;
+      return this._reduction.view(s);
+    }
+
+    // Incremental.
+    for (const op of ops) {
+      if (op.count === 1) {
+        const old = this._state.tryFind(op.value);
+        if (old !== undefined) this._sum = this.sub(this._sum, old);
+        const b = this._mapping(op.value);
+        this._sum = this.add(this._sum, b);
+        this._state = this._state.add(op.value, b);
+      } else if (op.count === -1) {
+        const old = this._state.tryFind(op.value);
+        if (old !== undefined) {
+          this._state = this._state.remove(op.value);
+          this._sum = this.sub(this._sum, old);
+        }
+      }
+    }
+
+    if (this._sum === undefined) {
+      // Inverse failed at some point — full recompute.
+      let s = this._reduction.seed;
+      for (const [, v] of this._state) s = this._reduction.add(s, v);
+      this._sum = s;
+    }
+    return this._reduction.view(this._sum);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1243,27 +1420,31 @@ class AdaptiveReduceByValueASet<T, B, S, V> extends AbstractVal<V> {
   }
 }
 
-/** Adaptively reduces the set using the given AdaptiveReduction. */
+/**
+ * Adaptively reduces the set using the given `AdaptiveReduction`.
+ * Incremental: applies `add`/`sub` per delta op and only bulk-
+ * recomputes when the delta is bigger than the state or `sub`
+ * fails. Mirrors F#'s `SetReductions.ReduceValue`.
+ */
 export function reduce<T, S, V>(
   reduction: AdaptiveReduction<T, S, V>,
   set: aset<T>,
 ): aval<V> {
-  return set.content.map((s) =>
-    reduction.view(s.fold((st, v) => reduction.add(st, v), reduction.seed)),
-  );
+  return new ReduceValueASet<T, S, V>(reduction, set);
 }
 
-/** Adaptively reduces the set after mapping each element. */
+/**
+ * Adaptively reduces the set after mapping each element through a
+ * synchronous `mapping`. Maintains a per-element cache of mapped
+ * values and adds/subtracts incrementally per delta op.
+ * Mirrors F#'s `SetReductions.ReduceByValue`.
+ */
 export function reduceBy<T1, T2, S, V>(
   reduction: AdaptiveReduction<T2, S, V>,
   mapping: (t: T1) => T2,
   set: aset<T1>,
 ): aval<V> {
-  return set.content.map((s) =>
-    reduction.view(
-      s.fold((st, v) => reduction.add(st, mapping(v)), reduction.seed),
-    ),
-  );
+  return new ReduceByValueASet<T1, T2, S, V>(reduction, mapping, set);
 }
 
 /**
@@ -1280,9 +1461,9 @@ export function reduceByA<T, B, S, V>(
   return new AdaptiveReduceByValueASet<T, B, S, V>(reduction, mapping, set);
 }
 
-/** Sum of all numeric elements. */
+/** Sum of all numeric elements. Incremental via `reduce`. */
 export function sum(set: aset<number>): aval<number> {
-  return set.content.map((s) => s.fold((acc, v) => acc + v, 0));
+  return reduce<number, number, number>(Reductions.sum, set);
 }
 
 /** Adaptively counts elements where the aval-valued predicate holds. */
@@ -1345,90 +1526,96 @@ export function averageByA<T>(
   return reduceByA(Reductions.average, mapping, set);
 }
 
-/** Average of all numeric elements (NaN for empty). */
+/** Average of all numeric elements (NaN for empty). Incremental via `reduce`. */
 export function average(set: aset<number>): aval<number> {
-  return set.content.map((s) => {
-    if (s.count === 0) return Number.NaN;
-    return s.fold((acc, v) => acc + v, 0) / s.count;
-  });
+  return reduce<number, [number, number], number>(Reductions.average, set);
 }
 
-/** Sum of mapped numeric values. */
+/** Sum of mapped numeric values. Incremental via `reduceBy`. */
 export function sumBy<T>(
   mapping: (t: T) => number,
   set: aset<T>,
 ): aval<number> {
-  return set.content.map((s) => s.fold((acc, v) => acc + mapping(v), 0));
+  return reduceBy<T, number, number, number>(Reductions.sum, mapping, set);
 }
 
-/** Average of mapped numeric values. */
+/** Average of mapped numeric values. Incremental via `reduceBy`. */
 export function averageBy<T>(
   mapping: (t: T) => number,
   set: aset<T>,
 ): aval<number> {
-  return set.content.map((s) => {
-    if (s.count === 0) return Number.NaN;
-    return s.fold((acc, v) => acc + mapping(v), 0) / s.count;
-  });
+  return reduceBy<T, number, [number, number], number>(
+    Reductions.average,
+    mapping,
+    set,
+  );
 }
 
-/** Adaptively folds with the given add (no inverse). */
+/**
+ * Adaptively folds with `add` (no inverse). Mirrors F#:
+ * `reduce (AdaptiveReduction.fold zero add) set`. The reduction's
+ * `sub` always fails, so the underlying `ReduceValue` will bulk
+ * recompute on every removal — matching F#'s `fold` semantics.
+ */
 export function fold<T, S>(
   add: (s: S, v: T) => S,
   zero: S,
   set: aset<T>,
 ): aval<S> {
-  return set.content.map((s) => s.fold(add, zero));
+  return reduce<T, S, S>(Reductions.fold(zero, add), set);
 }
 
-/** Adaptively folds with `add` and an inverse `subtract`. */
+/**
+ * Adaptively folds with `add` and inverse `subtract`. Incremental:
+ * `subtract` is consulted on every removal, no recompute needed.
+ * Mirrors F#: `reduce (AdaptiveReduction.group zero add subtract) set`.
+ */
 export function foldGroup<T, S>(
   add: (s: S, v: T) => S,
-  _subtract: (s: S, v: T) => S,
+  subtract: (s: S, v: T) => S,
   zero: S,
   set: aset<T>,
 ): aval<S> {
-  // Inverse not exploited for incremental updates — we recompute on
-  // every content change, matching the simple fold path. This is a
-  // semantic match for the F# `foldGroup`/`foldHalfGroup` API; the
-  // performance optimisation that uses the inverse can be added when
-  // the reduction layer is integrated end-to-end.
-  return set.content.map((s) => s.fold(add, zero));
+  return reduce<T, S, S>(Reductions.group(zero, add, subtract), set);
 }
 
+/**
+ * Adaptively folds with `add` and partial inverse `trySubtract`.
+ * When `trySubtract` returns `undefined` the running sum is
+ * invalidated and bulk-recomputed at the end of the tick.
+ * Mirrors F#: `reduce (AdaptiveReduction.halfGroup zero add trySub) set`.
+ */
 export function foldHalfGroup<T, S>(
   add: (s: S, v: T) => S,
-  _trySubtract: (s: S, v: T) => S | undefined,
+  trySubtract: (s: S, v: T) => S | undefined,
   zero: S,
   set: aset<T>,
 ): aval<S> {
-  return set.content.map((s) => s.fold(add, zero));
+  return reduce<T, S, S>(Reductions.halfGroup(zero, add, trySubtract), set);
 }
 
-/** Try-min for comparable types. */
+/**
+ * Adaptively the smallest element (or `undefined`). Incremental via
+ * `reduce` with `AdaptiveReduction.tryMin`. Mirrors F#'s `tryMin`.
+ */
 export function tryMin<T>(
   set: aset<T>,
   compare?: (a: T, b: T) => number,
 ): aval<T | undefined> {
   const cmp = compare ?? ((a: T, b: T) => (a < b ? -1 : a > b ? 1 : 0));
-  return set.content.map((s) => {
-    let best: T | undefined = undefined;
-    for (const v of s) if (best === undefined || cmp(v, best) < 0) best = v;
-    return best;
-  });
+  return reduce<T, T | undefined, T | undefined>(Reductions.tryMin(cmp), set);
 }
 
-/** Try-max for comparable types. */
+/**
+ * Adaptively the largest element (or `undefined`). Incremental via
+ * `reduce` with `AdaptiveReduction.tryMax`. Mirrors F#'s `tryMax`.
+ */
 export function tryMax<T>(
   set: aset<T>,
   compare?: (a: T, b: T) => number,
 ): aval<T | undefined> {
   const cmp = compare ?? ((a: T, b: T) => (a < b ? -1 : a > b ? 1 : 0));
-  return set.content.map((s) => {
-    let best: T | undefined = undefined;
-    for (const v of s) if (best === undefined || cmp(v, best) > 0) best = v;
-    return best;
-  });
+  return reduce<T, T | undefined, T | undefined>(Reductions.tryMax(cmp), set);
 }
 
 // ---------------------------------------------------------------------------
