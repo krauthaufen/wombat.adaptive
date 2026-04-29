@@ -19,7 +19,8 @@ import {
 } from "../adaptiveValue/adaptiveValue.js";
 import { AdaptiveToken } from "../core/adaptiveToken.js";
 import type { IAdaptiveObject } from "../core/types.js";
-import { Index } from "../datastructures/index.js";
+import { Index, indexZero } from "../datastructures/index.js";
+import { MapExt } from "../datastructures/mapExt.js";
 import { IndexList } from "../datastructures/indexList.js";
 import {
   IndexListDelta,
@@ -34,6 +35,7 @@ import { MultiSetMap } from "../datastructures/multiSetMap.js";
 import { IndexCache } from "../utilities/indexCache.js";
 import { IndexMapping, type Compare } from "../utilities/indexMapping.js";
 import { HashTable } from "../utilities/hashTable.js";
+import { rangeChange } from "../utilities/rangeDelta.js";
 import { indexListTrace } from "../traceable/indexListTraceable.js";
 import {
   AbstractDirtyReader,
@@ -180,34 +182,65 @@ class InitReader<T> extends AbstractReader<IndexListDelta<T>> {
 }
 
 /**
- * Reader for `range` over `number`. On each compute, rebuilds the
- * full new range and diffs against the previous state via
- * `IndexListDeltaExt.computeDelta`. Reuses indices for unchanged
- * positions where possible.
- *
- * PORT NOTE: F# AList.range optimises this with an explicit
- * four-region delta (lower/upper × +/-) computed by
- * `RangeDelta.rangeChange`. The simpler diff-the-state approach
- * here gives identical observable behaviour at slightly higher
- * cost when bounds change incrementally.
+ * Reader for `range` over `number`. Faithful port of F#'s AList.range
+ * reader: emits a minimal four-region delta as the bounds shift.
+ * Uses `RangeDelta.rangeChange` to split the change into max-side
+ * increase / decrease and min-side decrease / increase, then
+ * applies them in the F#-specified order so that intermediate
+ * `idxs` state stays consistent with the `lastMin`/`lastMax`
+ * bookkeeping.
  */
-class RangeReader extends AbstractStatefulReader<
-  IndexList<number>,
-  IndexListDelta<number>
-> {
+class RangeReader extends AbstractReader<IndexListDelta<number>> {
   private readonly _lower: aval<number>;
   private readonly _upper: aval<number>;
+  // Convention: lastMax = -1, lastMin = 0 ⇒ range currently empty.
+  private _lastMin = 0;
+  private _lastMax = -1;
+  // Holds one entry per current range value, in ascending order.
+  // We carry payload `true` and observe positions via
+  // `idxs.minIndex` / `idxs.maxIndex`.
+  private _idxs: IndexList<true> = IndexList.empty<true>();
   constructor(lower: aval<number>, upper: aval<number>) {
-    super(indexListTrace<number>());
+    super(IndexListDelta.empty<number>());
     this._lower = lower;
     this._upper = upper;
   }
   override compute(tok: AdaptiveToken): IndexListDelta<number> {
     const newMin = this._lower.getValue(tok) | 0;
     const newMax = this._upper.getValue(tok) | 0;
-    let next = IndexList.empty<number>();
-    for (let v = newMin; v <= newMax; v++) next = next.add(v);
-    return IndexListDeltaExt.computeDelta(this._state, next);
+
+    const r = rangeChange(this._lastMin, this._lastMax, newMin, newMax);
+    let delta = IndexListDelta.empty<number>();
+
+    // Count up through additions caused by increasing maximum.
+    for (let i = r.maxIncrease[0]; i <= r.maxIncrease[1]; i++) {
+      this._idxs = this._idxs.add(true);
+      delta = delta.add(this._idxs.maxIndex, ElementSet(i));
+    }
+
+    // Count down through removals caused by decreasing maximum.
+    for (let i = r.maxDecrease[0]; i >= r.maxDecrease[1]; i--) {
+      const lastMaxIdx = this._idxs.maxIndex;
+      delta = delta.add(lastMaxIdx, ElementRemove);
+      this._idxs = this._idxs.removeByIndex(lastMaxIdx);
+    }
+
+    // Count down through additions caused by decreasing minimum.
+    for (let i = r.minDecrease[0]; i >= r.minDecrease[1]; i--) {
+      this._idxs = this._idxs.prepend(true);
+      delta = delta.add(this._idxs.minIndex, ElementSet(i));
+    }
+
+    // Count up through removals caused by increasing minimum.
+    for (let i = r.minIncrease[0]; i <= r.minIncrease[1]; i++) {
+      const lastMinIdx = this._idxs.minIndex;
+      delta = delta.add(lastMinIdx, ElementRemove);
+      this._idxs = this._idxs.removeByIndex(lastMinIdx);
+    }
+
+    this._lastMax = newMax;
+    this._lastMin = newMin;
+    return delta;
   }
 }
 
@@ -818,46 +851,165 @@ class SortWithReader<A> extends AbstractReader<IndexListDelta<A>> {
 }
 
 /**
- * Reader for `subA` / `sub` / `take*` / `skip*`. Pulls the upstream
- * fully on each compute, slices by ordinal `[offset, offset+count-1]`,
- * and diffs against our previous slice via `computeDelta`. Output
- * preserves upstream indices.
+ * Reader for `subA` / `sub` / `take*` / `skip*`. Faithful port of
+ * F#'s `SubReader`: maintains a sliced state map plus min/max
+ * Index bookkeeping and emits a minimal four-region delta as the
+ * window shifts. Output preserves upstream indices.
  *
- * PORT NOTE: F#'s `SubReader` is a hand-tuned four-region merge
- * against `MapExt` slice/split primitives. Our equivalent rebuilds
- * the slice and diffs — same observable behaviour at slightly
- * higher per-tick cost. Worth revisiting if profiles show this in
- * a hot path.
+ * The state is `MapExt<Index, T>` — values keyed by the upstream's
+ * own indices, restricted to `[minIndex, maxIndex]` (inclusive).
  */
-class SubReader<T> extends AbstractStatefulReader<
-  IndexList<T>,
-  IndexListDelta<T>
-> {
+class SubReader<T> extends AbstractReader<IndexListDelta<T>> {
   private readonly _reader: IIndexListReader<T>;
   private readonly _offset: aval<number>;
   private readonly _count: aval<number>;
+  // Current slice keyed by the upstream's Index. Empty when the
+  // window is empty; non-empty otherwise with keys ⊆ [minIndex, maxIndex].
+  private _state: MapExt<Index, T> = MapExt.empty<Index, T>(_indexCmp);
+  // Inclusive lower / upper bounds. Convention when slice is empty:
+  // both equal `Index.zero` (irrelevant; we check `_state.isEmpty`).
+  private _minIndex: Index = indexZero;
+  private _maxIndex: Index = indexZero;
+
   constructor(input: alist<T>, offset: aval<number>, count: aval<number>) {
-    super(indexListTrace<T>());
+    super(IndexListDelta.empty<T>());
     this._reader = input.getReader();
     this._offset = offset;
     this._count = count;
   }
+
   override compute(tok: AdaptiveToken): IndexListDelta<T> {
-    // Pull upstream so reader.state is current.
-    this._reader.getChanges(tok);
-    const offset = Math.max(0, this._offset.getValue(tok) | 0);
-    const count = Math.max(0, this._count.getValue(tok) | 0);
+    const offset = this._offset.getValue(tok) | 0;
+    const count = this._count.getValue(tok) | 0;
+    const ops = this._reader.getChanges(tok);
     const up = this._reader.state;
-    const total = up.count;
-    const lo = Math.min(offset, total);
-    const hi = Math.min(offset + count - 1, total - 1);
-    const next =
-      hi < lo
-        ? IndexList.empty<T>()
-        : IndexList.fromMap(up.content.sliceAt(lo, hi));
-    return IndexListDeltaExt.computeDelta(this._state, next);
+
+    // Pick the new bounds. F# uses `TryGetIndexV` then falls back to
+    // `Index.after MaxIndex` for an out-of-range lower bound.
+    const lo = Math.max(0, offset);
+    const hi = offset + count - 1;
+    let newMin: Index;
+    if (lo < up.count) {
+      newMin = up.tryGetIndex(lo)!;
+    } else {
+      newMin = up.isEmpty ? indexZero.after() : up.maxIndex.after();
+    }
+    let newMax: Index;
+    if (hi >= 0 && hi < up.count) {
+      newMax = up.tryGetIndex(hi)!;
+    } else if (hi >= up.count) {
+      newMax = up.isEmpty ? indexZero : up.maxIndex;
+    } else {
+      // hi < 0 — empty window. Sentinel value below `newMin` makes
+      // `newMax >= newMin` false, which the empty branch handles.
+      newMax = indexZero;
+    }
+
+    const newWindowEmpty = up.isEmpty || newMax.compareTo(newMin) < 0;
+
+    if (!newWindowEmpty) {
+      // New window is non-empty.
+      const stateEmpty = this._state.isEmpty;
+      const disjoint =
+        stateEmpty ||
+        newMin.compareTo(this._maxIndex) > 0 ||
+        newMax.compareTo(this._minIndex) < 0;
+      if (disjoint) {
+        const newState = up.content.slice(newMin, newMax);
+        let delta = MapExt.empty<Index, ElementOperation<T>>(_indexCmp);
+        if (!stateEmpty) {
+          // Drop everything in old state.
+          for (const [k] of this._state) delta = delta.add(k, ElementRemove);
+        }
+        // Add everything in new state.
+        for (const [k, v] of newState) delta = delta.add(k, ElementSet(v));
+        this._state = newState;
+        this._minIndex = newMin;
+        this._maxIndex = newMax;
+        return IndexListDelta.ofMap(delta);
+      }
+
+      // Old and new windows overlap.
+      const sharedMin =
+        newMin.compareTo(this._minIndex) > 0 ? newMin : this._minIndex;
+      const sharedMax =
+        newMax.compareTo(this._maxIndex) < 0 ? newMax : this._maxIndex;
+
+      // Apply just the inner-region delta to the existing state.
+      const innerDelta = ops.content.slice(sharedMin, sharedMax);
+      const innerResult = this._state.applyDeltaAndGetEffective<
+        ElementOperation<T>,
+        ElementOperation<T>
+      >(innerDelta, applyForElementOp<T>);
+      this._state = innerResult.state;
+      let delta = innerResult.effective;
+
+      // Extend / shrink the lower side.
+      if (this._minIndex.compareTo(newMin) > 0) {
+        // window grew on the lower side: pull entries `[newMin, minIndex)`.
+        const l = up.content.sliceEx(newMin, true, this._minIndex, false);
+        for (const [k, v] of l) delta = delta.add(k, ElementSet(v));
+        this._state = this._state.union(l);
+        this._minIndex = newMin;
+      } else if (this._minIndex.compareTo(newMin) < 0) {
+        // window shrank on the lower side: drop entries `[minIndex, newMin)`.
+        const split = this._state.split(newMin);
+        this._state = split.hasValue
+          ? split.right.add(newMin, split.self as T)
+          : split.right;
+        for (const [k] of split.left) delta = delta.add(k, ElementRemove);
+        this._minIndex = newMin;
+      }
+
+      // Extend / shrink the upper side.
+      if (this._maxIndex.compareTo(newMax) < 0) {
+        // window grew on the upper side: pull entries `(maxIndex, newMax]`.
+        const r = up.content.sliceEx(this._maxIndex, false, newMax, true);
+        for (const [k, v] of r) delta = delta.add(k, ElementSet(v));
+        this._state = this._state.union(r);
+        this._maxIndex = newMax;
+      } else if (this._maxIndex.compareTo(newMax) > 0) {
+        // window shrank on the upper side: drop entries `(newMax, maxIndex]`.
+        const split = this._state.split(newMax);
+        this._state = split.hasValue
+          ? split.left.add(newMax, split.self as T)
+          : split.left;
+        for (const [k] of split.right) delta = delta.add(k, ElementRemove);
+        this._maxIndex = newMax;
+      }
+
+      return IndexListDelta.ofMap(delta);
+    }
+
+    // New window is empty.
+    if (this._state.isEmpty) return IndexListDelta.empty<T>();
+    let delta = MapExt.empty<Index, ElementOperation<T>>(_indexCmp);
+    for (const [k] of this._state) delta = delta.add(k, ElementRemove);
+    this._state = MapExt.empty<Index, T>(_indexCmp);
+    this._minIndex = indexZero;
+    this._maxIndex = indexZero;
+    return IndexListDelta.ofMap(delta);
   }
 }
+
+/** Apply a single delta op to a value cell (used by `SubReader`). */
+function applyForElementOp<T>(
+  _k: Index,
+  existing: T | undefined,
+  op: ElementOperation<T>,
+): [T | undefined, ElementOperation<T> | undefined] {
+  if (op.tag === "Remove") {
+    if (existing !== undefined) return [undefined, ElementRemove];
+    return [undefined, undefined];
+  }
+  if (existing !== undefined) {
+    if (Object.is(existing, op.value)) return [op.value, undefined];
+    return [op.value, ElementSet(op.value)];
+  }
+  return [op.value, ElementSet(op.value)];
+}
+
+const _indexCmp = (a: Index, b: Index): number => a.compareTo(b);
 
 /** Reader for `pairwise` / `pairwiseCyclic`. */
 class PairwiseReader<A> extends AbstractStatefulReader<
