@@ -28,6 +28,11 @@ export type {
   IWeakOutputSet,
 } from "./core/types.js";
 export type { IDisposable } from "./core/callbacks.js";
+export {
+  addMarkingCallback,
+  addWeakMarkingCallback,
+  onNextMarking,
+} from "./core/callbacks.js";
 
 // AVal
 export {
@@ -57,6 +62,9 @@ export * as Reductions from "./adaptiveValue/adaptiveReduction.js";
 // ASet
 export {
   ASet,
+  AbstractAset,
+  SetZipped,
+  zip as asetZip,
   force as asetForce,
 } from "./adaptiveHashSet/adaptiveHashSet.js";
 export type {
@@ -72,7 +80,10 @@ export {
 // AMap
 export {
   AMap,
+  AbstractAmap,
+  MapZipped,
   KeyValuePair,
+  zip as amapZip,
   force as amapForce,
 } from "./adaptiveHashMap/adaptiveHashMap.js";
 export type {
@@ -88,6 +99,9 @@ export {
 // AList
 export {
   AList,
+  AbstractAlist,
+  ListZipped,
+  zip as alistZip,
   force as alistForce,
 } from "./adaptiveIndexList/adaptiveIndexList.js";
 export type {
