@@ -1,18 +1,20 @@
 {
-  "name": "@aardworx/adaptive",
+  "name": "@aardworx/wombat.adaptive",
   "version": "0.2.1",
-  "description": "TypeScript port of FSharp.Data.Adaptive — incremental adaptive computations with aval/aset/amap/alist.",
+  "description": "Incremental adaptive computations (aval/aset/amap/alist) for the Wombat TypeScript stack. Port of F# FSharp.Data.Adaptive.",
   "license": "MIT",
   "author": "krauthaufen",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/krauthaufen/adaptive-ts.git"
+    "url": "git+https://github.com/krauthaufen/wombat.adaptive.git"
   },
-  "homepage": "https://github.com/krauthaufen/adaptive-ts",
+  "homepage": "https://github.com/krauthaufen/wombat.adaptive",
   "publishConfig": {
     "access": "public"
   },
   "keywords": [
+    "wombat",
+    "aardvark",
     "adaptive",
     "incremental",
     "reactive",

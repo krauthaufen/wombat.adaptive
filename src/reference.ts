@@ -1,4 +1,4 @@
-// Sub-path barrel: `@aardworx/adaptive/reference`.
+// Sub-path barrel: `@aardworx/wombat.adaptive/reference`.
 //
 // The slow-but-obviously-correct executable spec used by the
 // property tests. Useful when writing tests of your own that

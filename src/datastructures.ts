@@ -1,4 +1,4 @@
-// Sub-path barrel: `@aardworx/adaptive/datastructures`.
+// Sub-path barrel: `@aardworx/wombat.adaptive/datastructures`.
 export * from "./datastructures/hashCollections.js";
 export * from "./datastructures/indexList.js";
 export * from "./datastructures/index.js";

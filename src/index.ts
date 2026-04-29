@@ -1,18 +1,18 @@
-// Public API barrel for `@aardworx/adaptive`.
+// Public API barrel for `@aardworx/wombat.adaptive`.
 //
 // Most consumers will import from this top-level module:
 //
-//   import { AVal, cval, ASet, cset, transact } from "@aardworx/adaptive";
+//   import { AVal, cval, ASet, cset, transact } from "@aardworx/wombat.adaptive";
 //
 // For finer-grained imports the sub-paths exposed via package.json
 // `exports` are also available:
 //
-//   import { AVal, cval } from "@aardworx/adaptive/aval";
-//   import { ASet, cset } from "@aardworx/adaptive/aset";
-//   import { AMap, cmap } from "@aardworx/adaptive/amap";
-//   import { AList, clist } from "@aardworx/adaptive/alist";
-//   import { HashSet, HashMap, IndexList } from "@aardworx/adaptive/datastructures";
-//   import { ASetBridges, AMapBridges } from "@aardworx/adaptive/extensions";
+//   import { AVal, cval } from "@aardworx/wombat.adaptive/aval";
+//   import { ASet, cset } from "@aardworx/wombat.adaptive/aset";
+//   import { AMap, cmap } from "@aardworx/wombat.adaptive/amap";
+//   import { AList, clist } from "@aardworx/wombat.adaptive/alist";
+//   import { HashSet, HashMap, IndexList } from "@aardworx/wombat.adaptive/datastructures";
+//   import { ASetBridges, AMapBridges } from "@aardworx/wombat.adaptive/extensions";
 
 // Core
 export {

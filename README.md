@@ -1,4 +1,4 @@
-# @aardworx/adaptive
+# @aardworx/wombat.adaptive
 
 TypeScript port of [FSharp.Data.Adaptive](https://github.com/aardvark-platform/aardvark.docs/wiki/FSharp.Data.Adaptive). Incremental adaptive computations: `aval` (changeable values), `aset` (changeable sets), `amap` (changeable maps), `alist` (changeable lists), with all the combinators (`map` / `bind` / `filter` / `collect` / `union` / `sort` / `pairwise` / `reduce` / …).
 
@@ -7,7 +7,7 @@ The implementation is a faithful port of the F# original — same algorithms, sa
 ## Install
 
 ```bash
-npm install @aardworx/adaptive
+npm install @aardworx/wombat.adaptive
 ```
 
 ESM only. Node ≥ 18, modern bundlers (Vite, esbuild, webpack 5+).
@@ -15,7 +15,7 @@ ESM only. Node ≥ 18, modern bundlers (Vite, esbuild, webpack 5+).
 ## Quick start
 
 ```ts
-import { cval, AVal, cset, ASet, transact } from "@aardworx/adaptive";
+import { cval, AVal, cset, ASet, transact } from "@aardworx/wombat.adaptive";
 
 const x = cval(1);
 const y = cval(2);
@@ -43,21 +43,21 @@ The package ships fine-grained sub-paths that all tree-shake well. Pick whicheve
 
 | Sub-path | What it exports |
 | --- | --- |
-| `@aardworx/adaptive` | Curated public surface — most consumers import from here |
-| `@aardworx/adaptive/aval` | `AVal`, `cval`, `aval`, `Reductions` |
-| `@aardworx/adaptive/aset` | `ASet`, `cset`, `aset` |
-| `@aardworx/adaptive/amap` | `AMap`, `cmap`, `amap`, `KeyValuePair` |
-| `@aardworx/adaptive/alist` | `AList`, `clist`, `alist` |
-| `@aardworx/adaptive/datastructures` | `HashSet`, `HashMap`, `IndexList`, `Index`, `MapExt`, deltas |
-| `@aardworx/adaptive/extensions` | Cross-collection bridges + `addCallback` for collections |
-| `@aardworx/adaptive/traceable` | Low-level `History` / readers (extension authors) |
-| `@aardworx/adaptive/reference` | Slow-but-correct executable spec for property testing |
+| `@aardworx/wombat.adaptive` | Curated public surface — most consumers import from here |
+| `@aardworx/wombat.adaptive/aval` | `AVal`, `cval`, `aval`, `Reductions` |
+| `@aardworx/wombat.adaptive/aset` | `ASet`, `cset`, `aset` |
+| `@aardworx/wombat.adaptive/amap` | `AMap`, `cmap`, `amap`, `KeyValuePair` |
+| `@aardworx/wombat.adaptive/alist` | `AList`, `clist`, `alist` |
+| `@aardworx/wombat.adaptive/datastructures` | `HashSet`, `HashMap`, `IndexList`, `Index`, `MapExt`, deltas |
+| `@aardworx/wombat.adaptive/extensions` | Cross-collection bridges + `addCallback` for collections |
+| `@aardworx/wombat.adaptive/traceable` | Low-level `History` / readers (extension authors) |
+| `@aardworx/wombat.adaptive/reference` | Slow-but-correct executable spec for property testing |
 
 ```ts
 // fine-grained
-import { ASet, cset } from "@aardworx/adaptive/aset";
-import { HashSet } from "@aardworx/adaptive/datastructures";
-import { AListBridges } from "@aardworx/adaptive/extensions";
+import { ASet, cset } from "@aardworx/wombat.adaptive/aset";
+import { HashSet } from "@aardworx/wombat.adaptive/datastructures";
+import { AListBridges } from "@aardworx/wombat.adaptive/extensions";
 ```
 
 ## Listening to changes
@@ -67,7 +67,7 @@ delta, then on each transaction when the underlying reader has new
 changes. Mirrors F#'s `EvaluationCallbackExtensions`.
 
 ```ts
-import { cset, asetCallback, transact } from "@aardworx/adaptive";
+import { cset, asetCallback, transact } from "@aardworx/wombat.adaptive";
 
 const s = cset<number>([1, 2]);
 const sub = asetCallback(s, (state, delta) => {
@@ -90,10 +90,10 @@ Every combinator in the public surface is genuinely incremental — applying a d
 
 ## Equality
 
-`@aardworx/adaptive` honours the same `equals(other)` / `getHashCode()` convention as F#: any object that defines both methods is hashed and compared structurally throughout the library (HashSet keys, HashMap keys, Cache keys, Index identity, etc.). Primitives use `Object.is` + a type-aware hash.
+`@aardworx/wombat.adaptive` honours the same `equals(other)` / `getHashCode()` convention as F#: any object that defines both methods is hashed and compared structurally throughout the library (HashSet keys, HashMap keys, Cache keys, Index identity, etc.). Primitives use `Object.is` + a type-aware hash.
 
 ```ts
-import { HashSet } from "@aardworx/adaptive/datastructures";
+import { HashSet } from "@aardworx/wombat.adaptive/datastructures";
 
 class Pair {
   constructor(readonly a: number, readonly b: number) {}

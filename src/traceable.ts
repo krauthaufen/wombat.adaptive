@@ -1,4 +1,4 @@
-// Sub-path barrel: `@aardworx/adaptive/traceable`.
+// Sub-path barrel: `@aardworx/wombat.adaptive/traceable`.
 //
 // Low-level traceable / history machinery for authors building
 // custom readers and adaptive datatypes.
