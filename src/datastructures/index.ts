@@ -10,6 +10,17 @@
 // single-threaded, so all locks are removed. The relabeling algorithm,
 // the insertion-between-tags logic, and the reference-count-based
 // disposal are preserved structurally.
+//
+// PORT NOTE: F# relies on the GC finalizer of `Index` to call
+// `IndexNode.Delete()` and decrement the refcount. The JS port uses
+// `FinalizationRegistry` for the same purpose: when an `Index`
+// instance becomes unreachable, the registry fires and decrements
+// the wrapped node's refcount, removing it from the cycle when the
+// count hits zero. This keeps the global Index tree from leaking
+// forever and matches F# lifecycle semantics. The registry is best-
+// effort (V8 may delay or skip finalization), but correctness does
+// not depend on prompt cleanup — the tree is still well-formed
+// while leaks are pending.
 
 const UINT64_MAX = (1n << 64n) - 1n;
 const UINT64_MOD = 1n << 64n;
@@ -30,6 +41,12 @@ function u64(x: bigint): bigint {
  * when two adjacent tags differ by 1 we relabel a portion of the
  * chain to make room.
  */
+// Per-IndexNode stable identity hash. Mirrors F#'s
+// `RuntimeHelpers.GetHashCode(x)` (a tag-independent hash that does
+// not change when `IndexNode.relabel` reassigns tags). Computed
+// lazily and cached on the node itself.
+let _indexNodeIdCounter = 0;
+
 class IndexNode {
   /** Root-node for this cycle. */
   root!: IndexNode;
@@ -41,6 +58,18 @@ class IndexNode {
   tag: bigint = 0n;
   /** Reference count for tracking disposal. */
   refCount = 1;
+  /**
+   * Stable identity hash (independent of `tag`, which can change via
+   * `relabel`). Lazily assigned on first read.
+   */
+  private _idHash = 0;
+  get idHash(): number {
+    if (this._idHash === 0) {
+      _indexNodeIdCounter = (_indexNodeIdCounter + 1) | 0;
+      this._idHash = _indexNodeIdCounter;
+    }
+    return this._idHash;
+  }
 
   /** Sort key relative to root. */
   get key(): bigint {
@@ -155,12 +184,26 @@ class IndexNode {
  * Supported operations: `zero`, `after`, `before`, `between`.
  * O(log N) insert (amortised), O(1) delete, O(1) compare.
  */
+// FinalizationRegistry: when an `Index` is GC'd, decrement the
+// underlying node's refcount. This mirrors F#'s ~Index finalizer
+// (which called `IndexNode.Delete()`).
+const _indexFinalizer = new FinalizationRegistry<IndexNode>((node) => {
+  node.delete();
+});
+
 export class Index {
   /** @internal */
   readonly _real: IndexNode;
 
   private constructor(real: IndexNode) {
     this._real = real;
+    // Register this Index so its node's refcount drops on GC. The
+    // root index (indexZero below) is created from a node whose
+    // `root === self`; we skip registration for it because its
+    // lifetime is the program's.
+    if (real.root !== real) {
+      _indexFinalizer.register(this, real);
+    }
   }
 
   /** Returns an Index immediately after this one. */
@@ -205,8 +248,30 @@ export class Index {
     return this._real.compareTo(o._real);
   }
 
-  equals(o: Index): boolean {
-    return this._real === o._real;
+  /**
+   * Two `Index` instances are equal iff they wrap the same underlying
+   * `IndexNode`. Mirrors F#'s `Index.Equals` (which delegates to the
+   * node). Crucial: `Index.after()` may hand out two distinct `Index`
+   * instances wrapping the same node (with refCount > 1), so identity
+   * equality on `Index` is wrong — we need this method to be picked
+   * up by the equality convention.
+   */
+  equals(o: unknown): boolean {
+    if (this === o) return true;
+    if (!(o instanceof Index)) return false;
+    return this._real === (o as Index)._real;
+  }
+
+  /**
+   * Hash compatible with `equals`: two indices wrapping the same node
+   * yield the same hash. Mirrors F#'s
+   * `RuntimeHelpers.GetHashCode(IndexNode)` — a stable per-node
+   * identity hash that does NOT change when `IndexNode.relabel`
+   * reassigns tags. Hashing the tag would break HashTable lookups
+   * for indices that have been relabeled since insertion.
+   */
+  getHashCode(): number {
+    return this._real.idHash;
   }
 
   toString(): string {

@@ -62,6 +62,21 @@ import {
 } from "../../src/collectionExtensions/collectionExtensions.js";
 import { Seq as RefSeq } from "../../src/reference/adaptiveValue.js";
 
+import {
+  AList as RealAListOps,
+  type alist as RealAList,
+} from "../../src/adaptiveIndexList/adaptiveIndexList.js";
+import {
+  ChangeableIndexList as RealCList,
+  clist as realClist,
+} from "../../src/adaptiveIndexList/changeableIndexList.js";
+import {
+  AList as RefAListOps,
+  ChangeableIndexList as RefCList,
+  type alist as RefAList,
+} from "../../src/reference/adaptiveIndexList.js";
+import { IndexList } from "../../src/datastructures/indexList.js";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -93,6 +108,13 @@ export interface VMap<K, V> {
   readonly mref: RefAMap<K, V>;
   readonly mexpression: string;
   readonly mchanges: () => ChangeGen[];
+}
+
+export interface VList<T> {
+  readonly lreal: RealAList<T>;
+  readonly lref: RefAList<T>;
+  readonly lexpression: string;
+  readonly lchanges: () => ChangeGen[];
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +182,9 @@ const arbHashSet = fc
 const arbHashMap = fc
   .array(fc.tuple(arbInt, arbInt), { maxLength: 6 })
   .map((xs) => HashMap.ofArray<number, number>(xs));
+const arbIndexList = fc
+  .array(arbInt, { maxLength: 6 })
+  .map((xs) => IndexList.ofArray(xs));
 
 // ---------------------------------------------------------------------------
 // VVal<int> generators
@@ -858,6 +883,147 @@ export function vmapGen({
 
 /** Top-level VMap generator at a given size. */
 export const arbVMap = vmapGen;
+
+// ---------------------------------------------------------------------------
+// VList<int> generators
+// ---------------------------------------------------------------------------
+
+function vlistInit(): fc.Arbitrary<VList<number>> {
+  return arbIndexList.chain((value) => {
+    const id = nextCid();
+    const real = realClist<number>(value);
+    const ref = new RefCList<number>(value);
+    return fc.constant({
+      lreal: real,
+      lref: ref,
+      lexpression: `c${id}`,
+      lchanges: () => [
+        {
+          cell: real,
+          change: arbIndexList.map((nv) => () => {
+            real.value = nv;
+            ref.value = nv;
+            return `C${id} <- [${[...nv].join(",")}]`;
+          }),
+        },
+      ],
+    } satisfies VList<number>);
+  });
+}
+
+function vlistConstant(): fc.Arbitrary<VList<number>> {
+  return arbIndexList.map((v) => ({
+    lreal: RealAListOps.ofIndexList(v),
+    lref: RefAListOps.ofIndexList(v),
+    lexpression: `const(${[...v].join(",")})`,
+    lchanges: () => [],
+  }));
+}
+
+function vlistMap({ size }: { size: number }): fc.Arbitrary<VList<number>> {
+  return fc
+    .tuple(vlistGen({ size: size - 2 }), fnArb<number, number>(arbInt))
+    .map(([l, fn]) => ({
+      lreal: RealAListOps.map(fn.apply, l.lreal),
+      lref: RefAListOps.map(fn.apply, l.lref),
+      lexpression: `map (\n${indent(l.lexpression)}\n)`,
+      lchanges: l.lchanges,
+    }));
+}
+
+function vlistChoose({
+  size,
+}: {
+  size: number;
+}): fc.Arbitrary<VList<number>> {
+  return fc
+    .tuple(
+      vlistGen({ size: size - 2 }),
+      fnArb<number, number | undefined>(
+        fc.option(arbInt, { nil: undefined, freq: 3 }),
+      ),
+    )
+    .map(([l, fn]) => ({
+      lreal: RealAListOps.choose(fn.apply, l.lreal),
+      lref: RefAListOps.choose(fn.apply, l.lref),
+      lexpression: `choose (\n${indent(l.lexpression)}\n)`,
+      lchanges: l.lchanges,
+    }));
+}
+
+function vlistFilter({
+  size,
+}: {
+  size: number;
+}): fc.Arbitrary<VList<number>> {
+  return fc
+    .tuple(
+      vlistGen({ size: size - 2 }),
+      fnArb<number, boolean>(fc.boolean()),
+    )
+    .map(([l, fn]) => ({
+      lreal: RealAListOps.filter(fn.apply, l.lreal),
+      lref: RefAListOps.filter(fn.apply, l.lref),
+      lexpression: `filter (\n${indent(l.lexpression)}\n)`,
+      lchanges: l.lchanges,
+    }));
+}
+
+function vlistAppend({
+  size,
+}: {
+  size: number;
+}): fc.Arbitrary<VList<number>> {
+  const half = Math.floor(size / 2);
+  return fc.tuple(vlistGen({ size: half }), vlistGen({ size: half })).map(
+    ([a, b]) => ({
+      lreal: RealAListOps.append(a.lreal, b.lreal),
+      lref: RefAListOps.append(a.lref, b.lref),
+      lexpression: `append\n${indent(a.lexpression)}\n${indent(b.lexpression)}`,
+      lchanges: () => [...a.lchanges(), ...b.lchanges()],
+    }),
+  );
+}
+
+function vlistSortBy({
+  size,
+}: {
+  size: number;
+}): fc.Arbitrary<VList<number>> {
+  return fc
+    .tuple(vlistGen({ size: size - 2 }), fnArb<number, number>(arbInt))
+    .map(([l, fn]) => ({
+      lreal: RealAListOps.sortBy(fn.apply, l.lreal),
+      lref: RefAListOps.sortBy(fn.apply, l.lref),
+      lexpression: `sortBy (\n${indent(l.lexpression)}\n)`,
+      lchanges: l.lchanges,
+    }));
+}
+
+export function vlistGen({
+  size,
+}: {
+  size: number;
+}): fc.Arbitrary<VList<number>> {
+  if (size <= 0) {
+    return fc.oneof(
+      { arbitrary: vlistConstant(), weight: 1 },
+      { arbitrary: vlistInit(), weight: 5 },
+    );
+  }
+  return fc.oneof(
+    { arbitrary: vlistConstant(), weight: 1 },
+    { arbitrary: vlistInit(), weight: 3 },
+    { arbitrary: vlistMap({ size }), weight: 3 },
+    { arbitrary: vlistChoose({ size }), weight: 3 },
+    { arbitrary: vlistFilter({ size }), weight: 3 },
+    { arbitrary: vlistAppend({ size }), weight: 3 },
+    { arbitrary: vlistSortBy({ size }), weight: 2 },
+  );
+}
+
+/** Top-level VList generator at a given size. */
+export const arbVList = vlistGen;
 
 // Avoid "unused" complaints from imports we keep in the API surface.
 void RealCSet;

@@ -86,6 +86,66 @@ export class IndexListDelta<T>
     for (const e of this._content) yield e;
   }
 
+  /** Per-element transform of the operation, preserving the index. */
+  map<U>(
+    f: (idx: Index, op: ElementOperation<T>) => ElementOperation<U>,
+  ): IndexListDelta<U> {
+    let out = MapExt.empty<Index, ElementOperation<U>>(indexCmp);
+    for (const [idx, op] of this._content) out = out.add(idx, f(idx, op));
+    return new IndexListDelta<U>(out);
+  }
+
+  /**
+   * Per-element transform that may drop entries by returning
+   * `undefined`.
+   */
+  choose<U>(
+    f: (idx: Index, op: ElementOperation<T>) => ElementOperation<U> | undefined,
+  ): IndexListDelta<U> {
+    let out = MapExt.empty<Index, ElementOperation<U>>(indexCmp);
+    for (const [idx, op] of this._content) {
+      const r = f(idx, op);
+      if (r !== undefined) out = out.add(idx, r);
+    }
+    return new IndexListDelta<U>(out);
+  }
+
+  /**
+   * Per-element transform that may drop entries and may produce a
+   * different output index.
+   */
+  chooseIndexed<U>(
+    f: (
+      idx: Index,
+      op: ElementOperation<T>,
+    ) => [Index, ElementOperation<U>] | undefined,
+  ): IndexListDelta<U> {
+    let out = MapExt.empty<Index, ElementOperation<U>>(indexCmp);
+    for (const [idx, op] of this._content) {
+      const r = f(idx, op);
+      if (r !== undefined) out = out.add(r[0], r[1]);
+    }
+    return new IndexListDelta<U>(out);
+  }
+
+  /**
+   * Per-element transform yielding zero or more (idx, op) pairs.
+   */
+  collect<U>(
+    f: (
+      idx: Index,
+      op: ElementOperation<T>,
+    ) => IndexListDelta<U>,
+  ): IndexListDelta<U> {
+    let out = IndexListDelta.empty<U>();
+    for (const [idx, op] of this._content) out = out.combine(f(idx, op));
+    return out;
+  }
+
+  remove(idx: Index): IndexListDelta<T> {
+    return new IndexListDelta<T>(this._content.remove(idx));
+  }
+
   equals(other: IndexListDelta<T>): boolean {
     if (this._content.count !== other._content.count) return false;
     for (const [k, op] of this._content) {
