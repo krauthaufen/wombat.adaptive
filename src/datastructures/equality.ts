@@ -13,11 +13,12 @@
 //   * `boolean` — 0 / 1;
 //   * `null` / `undefined` — 0;
 //   * `bigint` — by stringification then FNV-1a;
-//   * objects — identity hash via a WeakMap that assigns a unique
-//     32-bit integer per object on first observation.
-// Equality defaults to `Object.is`. Two objects with structurally equal
-// fields but different identity hash to different values; pass a
-// custom comparer to opt in to structural keying.
+//   * objects with both `equals(other): boolean` and
+//     `getHashCode(): number` methods — those user-supplied methods
+//     are used (matches F#'s Equals/GetHashCode contract);
+//   * other objects — identity hash via a WeakMap that assigns a
+//     unique 32-bit integer per object on first observation, plus
+//     `Object.is` equality.
 
 export interface IEqualityComparer<K> {
   equals(a: K, b: K): boolean;
@@ -59,6 +60,17 @@ function hashObjectIdentity(o: object): number {
   return id;
 }
 
+interface CustomEquatable {
+  equals(other: unknown): boolean;
+  getHashCode(): number;
+}
+
+function hasCustomEquality(o: object): o is CustomEquatable {
+  const eq = (o as { equals?: unknown }).equals;
+  const gh = (o as { getHashCode?: unknown }).getHashCode;
+  return typeof eq === "function" && typeof gh === "function";
+}
+
 export function defaultHash(k: unknown): number {
   if (k === null || k === undefined) return 0;
   switch (typeof k) {
@@ -72,13 +84,27 @@ export function defaultHash(k: unknown): number {
       return hashString(k.toString());
     case "symbol":
       return hashString(k.toString());
-    default:
-      return hashObjectIdentity(k as object);
+    default: {
+      const o = k as object;
+      if (hasCustomEquality(o)) return o.getHashCode() | 0;
+      return hashObjectIdentity(o);
+    }
   }
 }
 
 export function defaultEquals<K>(a: K, b: K): boolean {
-  return Object.is(a, b);
+  if (Object.is(a, b)) return true;
+  if (
+    a !== null &&
+    b !== null &&
+    typeof a === "object" &&
+    typeof b === "object" &&
+    hasCustomEquality(a as object) &&
+    hasCustomEquality(b as object)
+  ) {
+    return (a as unknown as CustomEquatable).equals(b);
+  }
+  return false;
 }
 
 export const defaultComparer: IEqualityComparer<unknown> = {
