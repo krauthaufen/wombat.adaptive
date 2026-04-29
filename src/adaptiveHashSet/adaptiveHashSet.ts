@@ -30,6 +30,8 @@ import {
 import { HashSetDelta } from "../datastructures/hashSetDelta.js";
 import { SetOperation } from "../datastructures/operations.js";
 import { Cache } from "../utilities/cache.js";
+import { MultiSetMap } from "../datastructures/multiSetMap.js";
+import { AbstractVal } from "../adaptiveValue/adaptiveValue.js";
 import {
   CountingHashSet,
   hashSetDeltaMonoid,
@@ -44,6 +46,7 @@ import {
 } from "../traceable/history.js";
 import type { Traceable } from "../traceable/traceable.js";
 import type { AdaptiveReduction } from "../adaptiveValue/adaptiveReduction.js";
+import * as Reductions from "../adaptiveValue/adaptiveReduction.js";
 
 /**
  * An adaptive reader for `aset` that allows pulling operations and
@@ -1011,6 +1014,158 @@ export function countBy<T>(
   return set.content.map((s) => s.fold((acc, v) => (predicate(v) ? acc + 1 : acc), 0));
 }
 
+// ---------------------------------------------------------------------------
+// AdaptiveReduceByValueASet — incremental reduction over aset elements
+// each mapped through an aval. Mirrors F#'s
+// SetReductions.AdaptiveReduceByValue (AdaptiveHashSet.fs).
+// ---------------------------------------------------------------------------
+
+class AdaptiveReduceByValueASet<T, B, S, V> extends AbstractVal<V> {
+  private readonly _reduction: AdaptiveReduction<B, S, V>;
+  private readonly _mapping: (t: T) => aval<B>;
+  private readonly _reader: IHashSetReader<T>;
+
+  // Per-element bookkeeping: aval used for the element and the last
+  // observed B value.
+  private _state: HashMap<T, [aval<B>, B]> = HashMap.empty<T, [aval<B>, B]>();
+  // Reverse index: aval -> set of indices observing it. Used in
+  // inputChanged to mark the right indices dirty when an aval fires.
+  private _targets: MultiSetMap<aval<B>, T> = MultiSetMap.empty<aval<B>, T>();
+  // Indices whose aval changed since last evaluate. Drained on
+  // compute().
+  private _dirty: HashMap<T, aval<B>> = HashMap.empty<T, aval<B>>();
+  // Running sum. Cleared to undefined when the inverse fails.
+  private _sum: S | undefined;
+  private _seeded = false;
+
+  constructor(
+    reduction: AdaptiveReduction<B, S, V>,
+    mapping: (t: T) => aval<B>,
+    set: aset<T>,
+  ) {
+    super();
+    this._reduction = reduction;
+    this._mapping = mapping;
+    this._reader = set.getReader();
+    (this._reader as unknown as IAdaptiveObject).tag = "FoldReader";
+    this._sum = reduction.seed;
+    this._seeded = true;
+  }
+
+  override inputChanged(_t: unknown, o: IAdaptiveObject): void {
+    // Distinguish the input reader (tagged) from any aval observed
+    // through `this._mapping`.
+    if (o.tag === "FoldReader") return;
+    const indices = MultiSetMap.find(
+      o as unknown as aval<B>,
+      this._targets,
+    );
+    for (const i of indices) {
+      this._dirty = this._dirty.add(i, o as unknown as aval<B>);
+    }
+  }
+
+  private add(s: S | undefined, v: B): S | undefined {
+    if (s === undefined) return undefined;
+    return this._reduction.add(s, v);
+  }
+
+  private sub(s: S | undefined, v: B): S | undefined {
+    if (s === undefined) return undefined;
+    return this._reduction.sub(s, v);
+  }
+
+  private removeIndex(i: T): void {
+    const cur = this._state.tryFind(i);
+    if (cur === undefined) return;
+    const [ov, o] = cur;
+    this._state = this._state.remove(i);
+    this._sum = this.sub(this._sum, o);
+    const r = MultiSetMap.remove(ov, i, this._targets);
+    this._targets = r.result;
+    if (r.wasLast) (ov as unknown as IAdaptiveObject).outputs.remove(this);
+  }
+
+  override compute(tok: AdaptiveToken): V {
+    const ops = this._reader.getChanges(tok);
+
+    if (
+      this._reader.state.count <= 2 ||
+      this._reader.state.count <= ops.count
+    ) {
+      // Bulk-reset path: drop all targets, re-pull every aval.
+      this._dirty = HashMap.empty<T, aval<B>>();
+      for (const [m] of this._targets) {
+        (m as unknown as IAdaptiveObject).outputs.remove(this);
+      }
+      this._targets = MultiSetMap.empty<aval<B>, T>();
+
+      let newState = HashMap.empty<T, [aval<B>, B]>();
+      for (const [k] of this._reader.state.toHashMap()) {
+        const old = this._state.tryFind(k);
+        if (old !== undefined) {
+          const [m] = old;
+          const v = m.getValue(tok);
+          this._targets = MultiSetMap.add(m, k, this._targets);
+          newState = newState.add(k, [m, v]);
+        } else {
+          const m = this._mapping(k);
+          const v = m.getValue(tok);
+          this._targets = MultiSetMap.add(m, k, this._targets);
+          newState = newState.add(k, [m, v]);
+        }
+      }
+      this._state = newState;
+      let s = this._reduction.seed;
+      for (const [, [, v]] of newState) s = this._reduction.add(s, v);
+      this._sum = s;
+      this._seeded = true;
+      return this._reduction.view(s);
+    }
+
+    // Incremental path.
+    let dirty = this._dirty;
+    this._dirty = HashMap.empty<T, aval<B>>();
+
+    for (const op of ops) {
+      dirty = dirty.remove(op.value);
+      if (op.count === 1) {
+        // Add: ensure clean state for this index, then mapping + add.
+        this.removeIndex(op.value);
+        const r = this._mapping(op.value);
+        const n = r.getValue(tok);
+        this._targets = MultiSetMap.add(r, op.value, this._targets);
+        this._state = this._state.add(op.value, [r, n]);
+        this._sum = this.add(this._sum, n);
+      } else if (op.count === -1) {
+        this.removeIndex(op.value);
+      }
+    }
+
+    for (const [i, r] of dirty) {
+      const n = r.getValue(tok);
+      const cur = this._state.tryFind(i);
+      if (cur !== undefined) {
+        const [ro, o] = cur;
+        // ro should equal r; refresh the value entry.
+        this._sum = this.add(this.sub(this._sum, o), n);
+        this._state = this._state.add(i, [ro, n]);
+      } else {
+        // Index isn't tracked anymore; ignore the dirty signal.
+      }
+    }
+
+    if (this._sum === undefined) {
+      // Inverse failed at some point — recompute from scratch.
+      let s = this._reduction.seed;
+      for (const [, [, v]] of this._state) s = this._reduction.add(s, v);
+      this._sum = s;
+    }
+    this._seeded = true;
+    return this._reduction.view(this._sum);
+  }
+}
+
 /** Adaptively reduces the set using the given AdaptiveReduction. */
 export function reduce<T, S, V>(
   reduction: AdaptiveReduction<T, S, V>,
@@ -1034,9 +1189,83 @@ export function reduceBy<T1, T2, S, V>(
   );
 }
 
+/**
+ * Adaptively reduces the set after mapping each element to an `aval`.
+ * Incremental version: tracks per-element aval observations through a
+ * `MultiSetMap`, applies group-style add/sub when sets change, and
+ * falls back to a full recompute only when the inverse fails.
+ */
+export function reduceByA<T, B, S, V>(
+  reduction: AdaptiveReduction<B, S, V>,
+  mapping: (t: T) => aval<B>,
+  set: aset<T>,
+): aval<V> {
+  return new AdaptiveReduceByValueASet<T, B, S, V>(reduction, mapping, set);
+}
+
 /** Sum of all numeric elements. */
 export function sum(set: aset<number>): aval<number> {
   return set.content.map((s) => s.fold((acc, v) => acc + v, 0));
+}
+
+/** Adaptively counts elements where the aval-valued predicate holds. */
+export function countByA<T>(
+  predicate: (t: T) => aval<boolean>,
+  set: aset<T>,
+): aval<number> {
+  return reduceByA(Reductions.countPositive, predicate, set);
+}
+
+/**
+ * Adaptively checks whether the aval-valued predicate holds for at
+ * least one element.
+ */
+export function existsA<T>(
+  predicate: (t: T) => aval<boolean>,
+  set: aset<T>,
+): aval<boolean> {
+  return reduceByA<T, boolean, number, boolean>(
+    Reductions.mapOut(
+      (n: number) => n !== 0,
+      Reductions.countPositive,
+    ),
+    predicate,
+    set,
+  );
+}
+
+/**
+ * Adaptively checks whether the aval-valued predicate holds for all
+ * elements.
+ */
+export function forallA<T>(
+  predicate: (t: T) => aval<boolean>,
+  set: aset<T>,
+): aval<boolean> {
+  return reduceByA<T, boolean, number, boolean>(
+    Reductions.mapOut(
+      (n: number) => n === 0,
+      Reductions.countNegative,
+    ),
+    predicate,
+    set,
+  );
+}
+
+/** Adaptively sums the aval-valued mapping over the set. */
+export function sumByA<T>(
+  mapping: (t: T) => aval<number>,
+  set: aset<T>,
+): aval<number> {
+  return reduceByA(Reductions.sum, mapping, set);
+}
+
+/** Adaptively averages the aval-valued mapping over the set. */
+export function averageByA<T>(
+  mapping: (t: T) => aval<number>,
+  set: aset<T>,
+): aval<number> {
+  return reduceByA(Reductions.average, mapping, set);
 }
 
 /** Average of all numeric elements (NaN for empty). */
@@ -1162,8 +1391,14 @@ export const ASet = {
   forall,
   exists,
   countBy,
+  countByA,
   reduce,
   reduceBy,
+  reduceByA,
+  existsA,
+  forallA,
+  sumByA,
+  averageByA,
   sum,
   sumBy,
   average,

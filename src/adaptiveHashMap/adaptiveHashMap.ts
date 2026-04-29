@@ -17,6 +17,7 @@
 // `equality.ts`.
 
 import {
+  AbstractVal,
   AVal,
   type aval,
   delay as avalDelay,
@@ -1289,16 +1290,147 @@ export function reduceByA<K, V1, V2, S, R>(
   mapping: (k: K, v: V1) => aval<V2>,
   m: amap<K, V1>,
 ): aval<R> {
-  // Slow path: re-evaluate everything every time.
-  return AVal.custom((tok) => {
-    const s = m.content.getValue(tok);
-    let acc = reduction.seed;
-    for (const [k, v] of s) {
-      const av = mapping(k, v).getValue(tok);
-      acc = reduction.add(acc, av);
+  return new AdaptiveReduceByValueAMap<K, V1, V2, S, R>(reduction, mapping, m);
+}
+
+// ---------------------------------------------------------------------------
+// AdaptiveReduceByValueAMap — incremental reduction over amap entries
+// each mapped through an aval. Mirrors F#'s
+// MapReductions.AdaptiveReduceByValue (AdaptiveHashMap.fs).
+// ---------------------------------------------------------------------------
+
+class AdaptiveReduceByValueAMap<K, A, B, S, V> extends AbstractVal<V> {
+  private readonly _reduction: AdaptiveReduction<B, S, V>;
+  private readonly _mapping: (k: K, a: A) => aval<B>;
+  private readonly _reader: IHashMapReader<K, A>;
+
+  // Per-key bookkeeping: input value, the aval, and last observed B.
+  private _state: HashMap<K, [A, aval<B>, B]> = HashMap.empty<
+    K,
+    [A, aval<B>, B]
+  >();
+  private _targets: MultiSetMap<aval<B>, K> = MultiSetMap.empty<aval<B>, K>();
+  private _dirty: HashMap<K, aval<B>> = HashMap.empty<K, aval<B>>();
+  private _sum: S | undefined;
+
+  constructor(
+    reduction: AdaptiveReduction<B, S, V>,
+    mapping: (k: K, a: A) => aval<B>,
+    input: amap<K, A>,
+  ) {
+    super();
+    this._reduction = reduction;
+    this._mapping = mapping;
+    this._reader = input.getReader();
+    (this._reader as unknown as IAdaptiveObject).tag = "FoldReader";
+    this._sum = reduction.seed;
+  }
+
+  override inputChanged(_t: unknown, o: IAdaptiveObject): void {
+    if (o.tag === "FoldReader") return;
+    const indices = MultiSetMap.find(
+      o as unknown as aval<B>,
+      this._targets,
+    );
+    for (const i of indices) {
+      this._dirty = this._dirty.add(i, o as unknown as aval<B>);
     }
-    return reduction.view(acc);
-  });
+  }
+
+  private add(s: S | undefined, v: B): S | undefined {
+    if (s === undefined) return undefined;
+    return this._reduction.add(s, v);
+  }
+  private sub(s: S | undefined, v: B): S | undefined {
+    if (s === undefined) return undefined;
+    return this._reduction.sub(s, v);
+  }
+
+  private removeIndex(i: K): void {
+    const cur = this._state.tryFind(i);
+    if (cur === undefined) return;
+    const [, ov, o] = cur;
+    this._state = this._state.remove(i);
+    this._sum = this.sub(this._sum, o);
+    const r = MultiSetMap.remove(ov, i, this._targets);
+    this._targets = r.result;
+    if (r.wasLast) (ov as unknown as IAdaptiveObject).outputs.remove(this);
+  }
+
+  override compute(tok: AdaptiveToken): V {
+    const ops = this._reader.getChanges(tok);
+    const inputState = this._reader.state;
+
+    if (this._state.count <= 2 || this._state.count <= ops.count) {
+      // Bulk-reset path.
+      this._dirty = HashMap.empty<K, aval<B>>();
+      for (const [m] of this._targets) {
+        (m as unknown as IAdaptiveObject).outputs.remove(this);
+      }
+      this._targets = MultiSetMap.empty<aval<B>, K>();
+
+      let newState = HashMap.empty<K, [A, aval<B>, B]>();
+      for (const [k, a] of inputState) {
+        const old = this._state.tryFind(k);
+        if (old !== undefined && Object.is(old[0], a)) {
+          const [oa, m] = old;
+          const v = m.getValue(tok);
+          this._targets = MultiSetMap.add(m, k, this._targets);
+          newState = newState.add(k, [oa, m, v]);
+        } else {
+          const m = this._mapping(k, a);
+          const v = m.getValue(tok);
+          this._targets = MultiSetMap.add(m, k, this._targets);
+          newState = newState.add(k, [a, m, v]);
+        }
+      }
+      this._state = newState;
+      let s = this._reduction.seed;
+      for (const [, [, , v]] of newState) s = this._reduction.add(s, v);
+      this._sum = s;
+      return this._reduction.view(s);
+    }
+
+    // Incremental path.
+    let dirty = this._dirty;
+    this._dirty = HashMap.empty<K, aval<B>>();
+
+    for (const [i, op] of ops) {
+      dirty = dirty.remove(i);
+      if (op.tag === "Set") {
+        const old = this._state.tryFind(i);
+        if (old !== undefined && Object.is(old[0], op.value)) {
+          // Same input value — leave the entry alone.
+          continue;
+        }
+        this.removeIndex(i);
+        const r = this._mapping(i, op.value);
+        const n = r.getValue(tok);
+        this._targets = MultiSetMap.add(r, i, this._targets);
+        this._state = this._state.add(i, [op.value, r, n]);
+        this._sum = this.add(this._sum, n);
+      } else {
+        this.removeIndex(i);
+      }
+    }
+
+    for (const [i, r] of dirty) {
+      const n = r.getValue(tok);
+      const cur = this._state.tryFind(i);
+      if (cur !== undefined) {
+        const [a, ro, o] = cur;
+        this._sum = this.add(this.sub(this._sum, o), n);
+        this._state = this._state.add(i, [a, ro, n]);
+      }
+    }
+
+    if (this._sum === undefined) {
+      let s = this._reduction.seed;
+      for (const [, [, , v]] of this._state) s = this._reduction.add(s, v);
+      this._sum = s;
+    }
+    return this._reduction.view(this._sum);
+  }
 }
 
 export function forall<K, V>(

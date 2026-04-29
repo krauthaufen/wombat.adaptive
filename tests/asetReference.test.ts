@@ -81,7 +81,7 @@ describe("[ASet] reference impl", () => {
           return true;
         },
       ),
-      { numRuns: 500, verbose: false },
+      { numRuns: 500 },
     );
   });
 });

@@ -1,10 +1,13 @@
 // Port of FSharp.Data.Adaptive Utilities/Cache.fs
 //
-// PORT NOTE: F# original distinguishes "null cache" (a single slot for
-// `null` argument values that .NET Dictionary cannot key on) from the
-// regular cache (a Dictionary<T1, ...>). JS Map *can* key on `null` and
-// `undefined`, so the null-cache is unnecessary and merged into a single
-// Map. Behaviour is preserved for null/undefined arguments.
+// PORT NOTE: F# original uses `Dictionary<T1, _>` with the runtime
+// default equality comparer. The TS port is backed by `HashTable`
+// (see `hashTable.ts`) which honours the `equals(other)` /
+// `getHashCode()` convention from `equality.ts`. Lookup is a single
+// hash + bucket scan (length 1 in the common case), and inserts /
+// removes are in-place — no path-copy.
+
+import { HashTable } from "./hashTable.js";
 
 interface Entry<T2> {
   value: T2;
@@ -20,7 +23,10 @@ interface Entry<T2> {
  */
 export class Cache<T1, T2> {
   private readonly _mapping: (v: T1) => T2;
-  private readonly _cache: Map<T1, Entry<T2>> = new Map();
+  private readonly _cache: HashTable<T1, Entry<T2>> = new HashTable<
+    T1,
+    Entry<T2>
+  >();
 
   constructor(mapping: (v: T1) => T2) {
     this._mapping = mapping;
@@ -28,8 +34,7 @@ export class Cache<T1, T2> {
 
   /**
    * Removes all entries from the Cache and executes a function for
-   * all removed cache entries. Useful when contained values are
-   * disposable resources.
+   * all removed cache entries.
    */
   clear(remove: (v: T2) => void): void {
     for (const e of this._cache.values()) remove(e.value);
@@ -46,17 +51,12 @@ export class Cache<T1, T2> {
     if (existing !== undefined) {
       existing.refCount += 1;
       return existing.value;
-    } else {
-      const r = this._mapping(v);
-      this._cache.set(v, { value: r, refCount: 1 });
-      return r;
     }
+    const r = this._mapping(v);
+    this._cache.set(v, { value: r, refCount: 1 });
+    return r;
   }
 
-  /**
-   * Returns the function value associated with the given argument and
-   * decreases its reference count. Returns { deleted, value }.
-   */
   revokeAndGetDeletedUnsafe(v: T1): { deleted: boolean; value: T2 } {
     const existing = this._cache.get(v);
     if (existing === undefined) {
@@ -66,16 +66,10 @@ export class Cache<T1, T2> {
     if (existing.refCount === 0) {
       this._cache.delete(v);
       return { deleted: true, value: existing.value };
-    } else {
-      return { deleted: false, value: existing.value };
     }
+    return { deleted: false, value: existing.value };
   }
 
-  /**
-   * Decreases the reference count of the entry for the given
-   * argument. Returns the entry (with deleted flag) or undefined
-   * when no such entry exists.
-   */
   tryRevokeAndGetDeleted(
     v: T1,
   ): { deleted: boolean; value: T2 } | undefined {
@@ -85,9 +79,8 @@ export class Cache<T1, T2> {
     if (existing.refCount === 0) {
       this._cache.delete(v);
       return { deleted: true, value: existing.value };
-    } else {
-      return { deleted: false, value: existing.value };
     }
+    return { deleted: false, value: existing.value };
   }
 
   revokeUnsafe(v: T1): T2 {
@@ -103,10 +96,7 @@ export class Cache<T1, T2> {
   }
 
   /** Enumerate over all cache values. */
-  values(): IterableIterator<T2> {
-    const it = this._cache.values();
-    return (function* () {
-      for (const e of it) yield e.value;
-    })();
+  *values(): IterableIterator<T2> {
+    for (const e of this._cache.values()) yield e.value;
   }
 }

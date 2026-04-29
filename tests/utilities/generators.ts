@@ -56,6 +56,11 @@ import {
   ChangeableHashMap as RefCMap,
   type amap as RefAMap,
 } from "../../src/reference/adaptiveHashMap.js";
+import {
+  AMapExt as RealAMapExt,
+  SeqExt as RealSeqExt,
+} from "../../src/collectionExtensions/collectionExtensions.js";
+import { Seq as RefSeq } from "../../src/reference/adaptiveValue.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -195,7 +200,7 @@ function vvalConstant(): fc.Arbitrary<VVal<number>> {
 function vvalMap({ size }: { size: number }): fc.Arbitrary<VVal<number>> {
   return fc.tuple(vvalGen({ size: size - 1 }), fnArb<number, number>(arbInt))
     .map(([v, fn]) => ({
-      real: RealAValOps.map(fn.apply, v.real),
+      real: RealAValOps.map(v.real, fn.apply),
       ref: RefAValOps.map(fn.apply, v.ref),
       expression: `map (\n${indent(v.expression)}\n)`,
       changes: v.changes,
@@ -210,7 +215,7 @@ function vvalMap2({ size }: { size: number }): fc.Arbitrary<VVal<number>> {
       fnArb<readonly [number, number], number>(arbInt),
     )
     .map(([v1, v2, fn]) => ({
-      real: RealAValOps.map2((a, b) => fn.apply([a, b]), v1.real, v2.real),
+      real: RealAValOps.zip(v1.real, v2.real).map((a, b) => fn.apply([a, b])),
       ref: RefAValOps.map2((a, b) => fn.apply([a, b]), v1.ref, v2.ref),
       expression: `map2 (\n${indent(v1.expression)}\n${indent(v2.expression)}\n)`,
       changes: () => [...v1.changes(), ...v2.changes()],
@@ -242,7 +247,7 @@ function vvalBind({ size }: { size: number }): fc.Arbitrary<VVal<number>> {
         return inner;
       };
       return {
-        real: RealAValOps.bind((a: number) => mapping(a).real, v.real),
+        real: RealAValOps.bind(v.real, (a: number) => mapping(a).real),
         ref: RefAValOps.bind((a: number) => mapping(a).ref, v.ref),
         expression: `bind (\n${indent(v.expression)}\n)`,
         changes: () => {
@@ -251,6 +256,87 @@ function vvalBind({ size }: { size: number }): fc.Arbitrary<VVal<number>> {
         },
       };
     });
+}
+
+function vvalExistsA(): fc.Arbitrary<VVal<number>> {
+  // Build a list of VVal<bool> from a list of booleans plus a few cvals.
+  return fc
+    .tuple(
+      fc.array(vvalBool({ size: 0 }), { minLength: 1, maxLength: 5 }),
+      arbInt,
+      arbInt,
+    )
+    .map(([vbools, t, f]) => {
+      const map = (b: boolean) => (b ? t : f);
+      const real = RealAValOps.map(
+        RealSeqExt.existsA((v) => v.real, vbools),
+        map,
+      );
+      const ref = RefAValOps.map(
+        map,
+        RefSeq.existsA((v) => v.ref, vbools),
+      );
+      return {
+        real,
+        ref,
+        expression: `existsA (${vbools.length})`,
+        changes: () => vbools.flatMap((v) => v.changes()),
+      } satisfies VVal<number>;
+    });
+}
+
+function vvalForallA(): fc.Arbitrary<VVal<number>> {
+  return fc
+    .tuple(
+      fc.array(vvalBool({ size: 0 }), { minLength: 1, maxLength: 5 }),
+      arbInt,
+      arbInt,
+    )
+    .map(([vbools, t, f]) => {
+      const map = (b: boolean) => (b ? t : f);
+      const real = RealAValOps.map(
+        RealSeqExt.forallA((v) => v.real, vbools),
+        map,
+      );
+      const ref = RefAValOps.map(
+        map,
+        RefSeq.forallA((v) => v.ref, vbools),
+      );
+      return {
+        real,
+        ref,
+        expression: `forallA (${vbools.length})`,
+        changes: () => vbools.flatMap((v) => v.changes()),
+      } satisfies VVal<number>;
+    });
+}
+
+/**
+ * Boolean-valued VVal — used as the inner predicate value for
+ * existsA/forallA. We just lift a cval<bool> via init+map.
+ */
+function vvalBool({ size }: { size: number }): fc.Arbitrary<VVal<boolean>> {
+  void size;
+  return fc.boolean().chain((b) => {
+    const id = nextCid();
+    const real = realCval(b);
+    const ref = RefAValOps.init(b);
+    return fc.constant({
+      real,
+      ref,
+      expression: `b${id}`,
+      changes: () => [
+        {
+          cell: real,
+          change: fc.boolean().map((nv) => () => {
+            real.value = nv;
+            ref.value = nv;
+            return `B${id} <- ${nv}`;
+          }),
+        },
+      ],
+    } satisfies VVal<boolean>);
+  });
 }
 
 function vvalGen({ size }: { size: number }): fc.Arbitrary<VVal<number>> {
@@ -266,6 +352,8 @@ function vvalGen({ size }: { size: number }): fc.Arbitrary<VVal<number>> {
     { arbitrary: vvalMap({ size }), weight: 5 },
     { arbitrary: vvalMap2({ size }), weight: 5 },
     { arbitrary: vvalBind({ size }), weight: 3 },
+    { arbitrary: vvalExistsA(), weight: 3 },
+    { arbitrary: vvalForallA(), weight: 3 },
   );
 }
 
@@ -514,6 +602,40 @@ function vsetCollect({ size }: { size: number }): fc.Arbitrary<VSet<number>> {
     });
 }
 
+function vsetOfAMap({
+  size,
+}: {
+  size: number;
+}): fc.Arbitrary<VSet<number>> {
+  // Take a VMap<int,int>, project to the *value* set as
+  // `aset<int>` for both real and reference. We use a constant
+  // wrapper since the F# generator restricts inner size to 0 to keep
+  // the expression bounded.
+  return arbVMap({ size: 0 }).map((m) => ({
+    sreal: RealASetOps.map(
+      (kv) => kv.value,
+      RealAMapOps.toASet(m.mreal),
+    ),
+    sref: RefASetOps.map((kv) => kv[1], RefAMapOps.toASet(m.mref)),
+    sexpression: `ofAMap (\n${indent(m.mexpression)}\n)`,
+    schanges: m.mchanges,
+  }));
+}
+
+function vsetAMapKeys({
+  size,
+}: {
+  size: number;
+}): fc.Arbitrary<VSet<number>> {
+  return arbVMap({ size: 0 }).map((m) => ({
+    sreal: RealAMapExt.keys(m.mreal),
+    // Reference doesn't expose `.keys`; project via toASet+map(fst).
+    sref: RefASetOps.map((kv) => kv[0], RefAMapOps.toASet(m.mref)),
+    sexpression: `aMapKeys (\n${indent(m.mexpression)}\n)`,
+    schanges: m.mchanges,
+  }));
+}
+
 export function vsetGen({ size }: { size: number }): fc.Arbitrary<VSet<number>> {
   if (size <= 0) {
     return fc.oneof(
@@ -535,6 +657,8 @@ export function vsetGen({ size }: { size: number }): fc.Arbitrary<VSet<number>> 
     { arbitrary: vsetOfAVal({ size }), weight: 1 },
     { arbitrary: vsetBind({ size }), weight: 1 },
     { arbitrary: vsetCollect({ size }), weight: 2 },
+    { arbitrary: vsetOfAMap({ size }), weight: 2 },
+    { arbitrary: vsetAMapKeys({ size }), weight: 2 },
   );
 }
 
