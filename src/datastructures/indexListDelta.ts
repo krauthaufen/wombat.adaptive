@@ -1,7 +1,7 @@
 // Port of FSharp.Data.Adaptive Datastructures/IndexListDelta.fs +
 // the IndexList entries from Deltas.fs.
 
-import { Index } from "./index.js";
+import { Index, IndexOps, indexZero } from "./index.js";
 import { IndexList } from "./indexList.js";
 import { MapExt, type KeyComparer } from "./mapExt.js";
 import {
@@ -183,4 +183,195 @@ export const IndexListDeltaExt = {
       r,
     );
   },
+
+  /// Determines the operations needed to transform `src` into the
+  /// given `dst` array, treating elements by user-supplied equality.
+  /// Uses the Myers diff algorithm so the returned delta is "minimal"
+  /// in edit-distance terms, reusing source Indices wherever possible.
+  computeDeltaToArray: <T>(
+    equals: (a: T, b: T) => boolean,
+    src: IndexList<T>,
+    dst: T[],
+  ): IndexListDelta<T> => {
+    if (dst.length === 0) {
+      return IndexListDeltaExt.computeDelta(src, IndexList.empty<T>());
+    }
+    if (src.count === 0) {
+      return IndexListDeltaExt.computeDelta(src, IndexList.ofArray(dst));
+    }
+    // Both non-empty: run Myers, then translate Add/Remove/Equal ops
+    // into IndexListDelta operations using the source Indices.
+    const srcArr = src.toArrayIndexed();
+    const ops = myersDiff(equals, srcArr, dst);
+    let si = 0;
+    let di = 0;
+    let delta = IndexListDelta.empty<T>();
+    let lastIndex = indexZero;
+    let i = 0;
+    while (i < ops.length) {
+      const op = ops[i]!;
+      if (op === DeltaOp.Equal) {
+        lastIndex = srcArr[si]![0];
+        si += 1;
+        di += 1;
+        i += 1;
+        continue;
+      }
+      // Collect a run of non-Equal ops (Add/Remove) until the next Equal.
+      let remCnt = 0;
+      let addCnt = 0;
+      while (i < ops.length && ops[i]! !== DeltaOp.Equal) {
+        if (ops[i]! === DeltaOp.Remove) remCnt += 1;
+        else addCnt += 1;
+        i += 1;
+      }
+      const replace = Math.min(remCnt, addCnt);
+      for (let r = 0; r < replace; r++) {
+        const idx = srcArr[si]![0];
+        delta = delta.add(idx, ElementSet(dst[di]!));
+        si += 1;
+        di += 1;
+        lastIndex = idx;
+      }
+      for (let r = replace; r < remCnt; r++) {
+        const idx = srcArr[si]![0];
+        delta = delta.add(idx, ElementRemove);
+        si += 1;
+      }
+      if (replace < addCnt) {
+        const useBetween = si < srcArr.length;
+        const next = useBetween ? srcArr[si]![0] : null;
+        for (let r = replace; r < addCnt; r++) {
+          const newIdx =
+            next !== null
+              ? IndexOps.between(lastIndex, next)
+              : IndexOps.after(lastIndex);
+          delta = delta.add(newIdx, ElementSet(dst[di]!));
+          lastIndex = newIdx;
+          di += 1;
+        }
+      }
+    }
+    return delta;
+  },
+
+  /// Same as `computeDeltaToArray` but returns the rebuilt IndexList
+  /// alongside the delta.
+  computeDeltaToArrayAndGetResult: <T>(
+    equals: (a: T, b: T) => boolean,
+    src: IndexList<T>,
+    dst: T[],
+  ): { delta: IndexListDelta<T>; result: IndexList<T> } => {
+    const delta = IndexListDeltaExt.computeDeltaToArray(equals, src, dst);
+    const { state } = IndexListDeltaExt.applyDelta(src, delta);
+    return { delta, result: state };
+  },
+
+  /// Convenience over `computeDeltaToArray` for an iterable / list.
+  computeDeltaToList: <T>(
+    equals: (a: T, b: T) => boolean,
+    src: IndexList<T>,
+    dst: T[],
+  ): IndexListDelta<T> => IndexListDeltaExt.computeDeltaToArray(equals, src, dst),
+
+  computeDeltaToSeq: <T>(
+    equals: (a: T, b: T) => boolean,
+    src: IndexList<T>,
+    dst: Iterable<T>,
+  ): IndexListDelta<T> =>
+    IndexListDeltaExt.computeDeltaToArray(equals, src, [...dst]),
 };
+
+// ---------------------------------------------------------------------------
+// Myers diff
+//
+// PORT NOTE: F# packs the operation list into 64-bit chunks
+// (`DeltaOperationList64`) for cache efficiency and represents it as a
+// linked list of those chunks. We use a plain `DeltaOp[]` here — the
+// total ops count is bounded by `src.length + dst.length`, well under
+// any size where the F# packing matters in JS.
+// ---------------------------------------------------------------------------
+
+const enum DeltaOp {
+  Remove = 0,
+  Add = 1,
+  Equal = 2,
+}
+
+/// Standard Myers algorithm. Returns operations in source-and-target
+/// order: Remove pops from `src`, Add takes from `dst`, Equal advances
+/// both. F# original additionally reverses the inputs to walk
+/// backwards; we keep the natural orientation.
+function myersDiff<A, B>(
+  equals: (a: A, b: B) => boolean,
+  src: ReadonlyArray<readonly [unknown, A]>,
+  dst: ReadonlyArray<B>,
+): DeltaOp[] {
+  const m = src.length;
+  const n = dst.length;
+  const max = m + n;
+  const v = new Array<number>(2 * max + 1).fill(0);
+  const trace: number[][] = [];
+  for (let d = 0; d <= max; d++) {
+    trace.push(v.slice());
+    for (let k = -d; k <= d; k += 2) {
+      let x: number;
+      if (k === -d || (k !== d && (v[k - 1 + max] ?? 0) < (v[k + 1 + max] ?? 0))) {
+        x = v[k + 1 + max] ?? 0;
+      } else {
+        x = (v[k - 1 + max] ?? 0) + 1;
+      }
+      let y = x - k;
+      while (x < m && y < n && equals(src[x]![1], dst[y]!)) {
+        x += 1;
+        y += 1;
+      }
+      v[k + max] = x;
+      if (x >= m && y >= n) {
+        // Reconstruct path by walking the trace back.
+        return reconstructPath(trace, d, x, y, max);
+      }
+    }
+  }
+  return [];
+}
+
+function reconstructPath(
+  trace: number[][],
+  finalD: number,
+  endX: number,
+  endY: number,
+  max: number,
+): DeltaOp[] {
+  const ops: DeltaOp[] = [];
+  let x = endX;
+  let y = endY;
+  for (let d = finalD; d > 0; d--) {
+    const v = trace[d]!;
+    const k = x - y;
+    let prevK: number;
+    if (k === -d || (k !== d && (v[k - 1 + max] ?? 0) < (v[k + 1 + max] ?? 0))) {
+      prevK = k + 1;
+    } else {
+      prevK = k - 1;
+    }
+    const prevX = v[prevK + max] ?? 0;
+    const prevY = prevX - prevK;
+    while (x > prevX && y > prevY) {
+      ops.push(DeltaOp.Equal);
+      x -= 1;
+      y -= 1;
+    }
+    if (x === prevX) ops.push(DeltaOp.Add);
+    else ops.push(DeltaOp.Remove);
+    x = prevX;
+    y = prevY;
+  }
+  while (x > 0 && y > 0) {
+    ops.push(DeltaOp.Equal);
+    x -= 1;
+    y -= 1;
+  }
+  ops.reverse();
+  return ops;
+}

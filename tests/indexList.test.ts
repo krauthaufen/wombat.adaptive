@@ -3,7 +3,11 @@
 
 import { describe, expect, test } from "vitest";
 import * as fc from "fast-check";
-import { Index, IndexOps, indexZero } from "../src/datastructures/index.js";
+import {
+  Index,
+  IndexOps,
+  indexZero,
+} from "../src/datastructures/index.js";
 import { IndexList } from "../src/datastructures/indexList.js";
 import {
   IndexListDelta,
@@ -239,5 +243,354 @@ describe("IndexListDelta", () => {
     const d = IndexListDelta.ofArray<number>([[indices[1]!, ElementSet(99)]]);
     const out = IndexListDeltaExt.applyDelta(l, d);
     expect(out.state.toList()).toEqual([10, 99, 30]);
+  });
+});
+
+// =============================================================================
+// Full F# test ports — IndexList.fs
+// =============================================================================
+
+describe("[Index] ported", () => {
+  test("maintaining order under nested between", () => {
+    fc.assert(
+      fc.property(fc.array(fc.boolean(), { maxLength: 1024 }), (lr) => {
+        const min = indexZero;
+        const max = IndexOps.after(min);
+        let l = min;
+        let r = max;
+        const all: { left: boolean; idx: Index }[] = [];
+        for (const left of lr) {
+          if (left) {
+            r = IndexOps.between(l, r);
+            all.push({ left: true, idx: r });
+          } else {
+            l = IndexOps.between(l, r);
+            all.push({ left: false, idx: l });
+          }
+        }
+        // Walk the trace forward, narrowing the window. Each new index
+        // must be strictly between the current window bounds.
+        let lo = min;
+        let hi = max;
+        for (const { left, idx } of all) {
+          expect(idx.compareTo(lo)).toBeGreaterThan(0);
+          expect(idx.compareTo(hi)).toBeLessThan(0);
+          if (left) hi = idx;
+          else lo = idx;
+        }
+      }),
+      { numRuns: 50 },
+    );
+  });
+});
+
+describe("[IndexList] ported", () => {
+  const arbList = fc.array(fc.integer(), { maxLength: 100 });
+
+  test("creation round-trip", () => {
+    fc.assert(
+      fc.property(arbList, (l) => {
+        expect(IndexList.ofList(l).toList()).toEqual(l);
+      }),
+    );
+  });
+
+  test("count matches list length", () => {
+    fc.assert(
+      fc.property(arbList, (l) => {
+        expect(IndexList.ofList(l).count).toBe(l.length);
+      }),
+    );
+  });
+
+  test("skip / take agree with Array slice", () => {
+    fc.assert(
+      fc.property(
+        fc.tuple(fc.integer(), fc.integer(), fc.integer(), arbList),
+        ([a, b, c, l]) => {
+          const list = [a, b, c, ...l];
+          const il = IndexList.ofList(list);
+          expect(il.skipFirst(2).toList()).toEqual(list.slice(2));
+          expect(il.skipFirst(0).toList()).toEqual(list);
+          expect(il.skipFirst(1).toList()).toEqual(list.slice(1));
+          const cnt = Math.floor(list.length / 2);
+          expect(il.takeFirst(cnt).toList()).toEqual(list.slice(0, cnt));
+          expect(il.takeFirst(0).toList()).toEqual([]);
+          expect(il.takeFirst(2).toList()).toEqual(list.slice(0, 2));
+        },
+      ),
+    );
+  });
+
+  test("append concatenates", () => {
+    fc.assert(
+      fc.property(arbList, arbList, (l, r) => {
+        const out = IndexList.append(IndexList.ofList(l), IndexList.ofList(r));
+        expect(out.toList()).toEqual([...l, ...r]);
+      }),
+    );
+  });
+
+  test("take / skip exhaustive", () => {
+    fc.assert(
+      fc.property(arbList, (l) => {
+        const ll = IndexList.ofList(l);
+        const c = l.length;
+        const s1 = Math.floor(c / 2);
+        const s2 = Math.floor(c / 3);
+        expect(ll.skipFirst(c).toList()).toEqual([]);
+        expect(ll.skipFirst(0).toList()).toEqual(l);
+        expect(ll.skipFirst(s1).toList()).toEqual(l.slice(s1));
+        expect(ll.skipFirst(s2).toList()).toEqual(l.slice(s2));
+        expect(ll.takeFirst(c).toList()).toEqual(l);
+        expect(ll.takeFirst(0).toList()).toEqual([]);
+        expect(ll.takeFirst(s1).toList()).toEqual(l.slice(0, s1));
+        expect(ll.takeFirst(s2).toList()).toEqual(l.slice(0, s2));
+      }),
+    );
+  });
+
+  test("sort variants agree with Array.prototype.sort", () => {
+    fc.assert(
+      fc.property(arbList, (l) => {
+        const ll = IndexList.ofList(l);
+        const cmp = (a: number, b: number) => b - a;
+        expect(ll.sortBy((x) => x).toList()).toEqual(
+          [...l].sort((a, b) => a - b),
+        );
+        expect(ll.sortByDescending((x) => x).toList()).toEqual(
+          [...l].sort((a, b) => b - a),
+        );
+        expect(ll.sortWith(cmp).toList()).toEqual([...l].sort(cmp));
+        expect(ll.sort().toList()).toEqual([...l].sort((a, b) => a - b));
+        expect(ll.sortDescending().toList()).toEqual(
+          [...l].sort((a, b) => b - a),
+        );
+      }),
+    );
+  });
+
+  test("sum / sumBy / average / averageBy agree with Array reductions", () => {
+    fc.assert(
+      fc.property(
+        fc.tuple(
+          fc.float({ noNaN: true, noDefaultInfinity: true }),
+          fc.array(fc.float({ noNaN: true, noDefaultInfinity: true }), {
+            maxLength: 100,
+          }),
+        ),
+        ([h, rest]) => {
+          const l = [h, ...rest];
+          const ll = IndexList.ofList(l);
+          const mapping = (v: number) => v + 1.0;
+          const sum = l.reduce((a, b) => a + b, 0);
+          const avg = sum / l.length;
+          expect(ll.sum()).toBeCloseTo(sum, 8);
+          expect(ll.average()).toBeCloseTo(avg, 8);
+          const sumB = l.map(mapping).reduce((a, b) => a + b, 0);
+          expect(ll.sumBy(mapping)).toBeCloseTo(sumB, 8);
+          expect(ll.averageBy(mapping)).toBeCloseTo(sumB / l.length, 8);
+        },
+      ),
+    );
+  });
+
+  test("unzip / unzip3 split tuples elementwise", () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.tuple(fc.integer(), fc.float({ noNaN: true })), {
+          maxLength: 50,
+        }),
+        (l) => {
+          const [la, lb] = IndexList.unzip(IndexList.ofList(l));
+          expect(la.toList()).toEqual(l.map(([a]) => a));
+          expect(lb.toList()).toEqual(l.map(([, b]) => b));
+        },
+      ),
+    );
+    fc.assert(
+      fc.property(
+        fc.array(fc.tuple(fc.integer(), fc.float({ noNaN: true }), fc.string()), {
+          maxLength: 50,
+        }),
+        (l) => {
+          const [la, lb, lc] = IndexList.unzip3(IndexList.ofList(l));
+          expect(la.toList()).toEqual(l.map(([a]) => a));
+          expect(lb.toList()).toEqual(l.map(([, b]) => b));
+          expect(lc.toList()).toEqual(l.map(([, , c]) => c));
+        },
+      ),
+    );
+  });
+
+  test("rev preserves min/max indices and reverses values", () => {
+    fc.assert(
+      fc.property(arbList, (l) => {
+        const ll = IndexList.ofList(l);
+        const rl = ll.rev();
+        if (ll.count > 0) {
+          expect(ll.minIndex.equals(rl.minIndex)).toBe(true);
+          expect(ll.maxIndex.equals(rl.maxIndex)).toBe(true);
+        }
+        expect(rl.toList()).toEqual([...l].reverse());
+      }),
+    );
+  });
+
+  test("enumerator agrees with toList", () => {
+    fc.assert(
+      fc.property(arbList, (m) => {
+        const h = IndexList.ofList(m);
+        expect([...h]).toEqual(h.toList());
+        expect([...h]).toEqual(m);
+      }),
+    );
+  });
+
+  test("collect concatenates per-element lists", () => {
+    fc.assert(
+      fc.property(arbList, (l) => {
+        const refOut = l.flatMap((v) => [v, 2 * v, 3 * v]);
+        const got = IndexList.ofList(l)
+          .collect((v) => IndexList.ofList([v, 2 * v, 3 * v]))
+          .toList();
+        expect(got).toEqual(refOut);
+      }),
+    );
+  });
+
+  test("map matches Array.prototype.map", () => {
+    fc.assert(
+      fc.property(arbList, (l) => {
+        const ref = l.map((v) => Math.floor(v / 3));
+        const got = IndexList.ofList(l).map((_i, v) => Math.floor(v / 3)).toList();
+        expect(got).toEqual(ref);
+      }),
+    );
+  });
+
+  test("add and prepend extend the list at both ends", () => {
+    fc.assert(
+      fc.property(arbList, (l) => {
+        const il = IndexList.ofList(l).add(1).prepend(5);
+        expect(il.toList()).toEqual([5, ...l, 1]);
+      }),
+    );
+  });
+
+  test("equality (by-value) detects extension and prepend", () => {
+    fc.assert(
+      fc.property(arbList, (l) => {
+        const a = IndexList.ofList(l);
+        expect(a.equalsByValues(a)).toBe(true);
+        expect(a.equalsByValues(a.add(1))).toBe(false);
+        expect(a.equalsByValues(a.prepend(1))).toBe(false);
+      }),
+    );
+  });
+
+  test("range produces [lo..hi]", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: -50, max: 50 }),
+        fc.integer({ min: -50, max: 50 }),
+        (lo, hi) => {
+          const got = IndexList.range(lo, hi).toList();
+          const ref: number[] = [];
+          for (let i = lo; i <= hi; i++) ref.push(i);
+          expect(got).toEqual(ref);
+        },
+      ),
+    );
+  });
+
+  test("init builds [0..length-1] mapped", () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 0, max: 100 }), (n) => {
+        expect(IndexList.init(n, (i) => i).toList()).toEqual(
+          Array.from({ length: n }, (_, i) => i),
+        );
+      }),
+    );
+  });
+
+  test("tryGetPosition returns the int position for each Index in the list", () => {
+    fc.assert(
+      fc.property(arbList, (l) => {
+        const ll = IndexList.ofList(l);
+        let i = 0;
+        for (const [idx] of ll.toSeqIndexed()) {
+          expect(ll.tryGetPosition(idx)).toBe(i);
+          i += 1;
+        }
+      }),
+    );
+  });
+
+  test("computeDelta / applyDelta full identities", () => {
+    fc.assert(
+      fc.property(arbList, arbList, arbList, (l1, l2, l3) => {
+        const i1 = IndexList.ofList(l1);
+        const i2 = IndexList.ofList(l2);
+        const i3 = IndexList.ofList(l3);
+        expect(IndexListDeltaExt.computeDelta(i1, i1).isEmpty).toBe(true);
+        expect(IndexListDeltaExt.computeDelta(i2, i2).isEmpty).toBe(true);
+        expect(IndexListDeltaExt.computeDelta(i3, i3).isEmpty).toBe(true);
+
+        const d12 = IndexListDeltaExt.computeDelta(i1, i2);
+        const d23 = IndexListDeltaExt.computeDelta(i2, i3);
+        const d31 = IndexListDeltaExt.computeDelta(i3, i1);
+        expect(IndexListDeltaExt.applyDelta(i1, d12).state.toList()).toEqual(l2);
+        expect(IndexListDeltaExt.applyDelta(i2, d23).state.toList()).toEqual(l3);
+        expect(IndexListDeltaExt.applyDelta(i3, d31).state.toList()).toEqual(l1);
+
+        const d123 = d12.combine(d23);
+        const d231 = d23.combine(d31);
+        const d312 = d31.combine(d12);
+        expect(IndexListDeltaExt.applyDelta(i1, d123).state.toList()).toEqual(l3);
+        expect(IndexListDeltaExt.applyDelta(i2, d231).state.toList()).toEqual(l1);
+        expect(IndexListDeltaExt.applyDelta(i3, d312).state.toList()).toEqual(l2);
+
+        const d1231 = d123.combine(d31);
+        const d2312 = d231.combine(d12);
+        const d3123 = d312.combine(d23);
+        expect(IndexListDeltaExt.applyDelta(i1, d1231).state.toList()).toEqual(l1);
+        expect(IndexListDeltaExt.applyDelta(i2, d2312).state.toList()).toEqual(l2);
+        expect(IndexListDeltaExt.applyDelta(i3, d3123).state.toList()).toEqual(l3);
+      }),
+    );
+  });
+
+  test("computeDeltaToList round-trips and is empty for self", () => {
+    const eq = (a: number, b: number) => a === b;
+    fc.assert(
+      fc.property(arbList, arbList, (l1, l2) => {
+        const a1 = IndexList.ofList(l1);
+        const a2 = IndexList.ofList(l2);
+        expect(IndexListDeltaExt.computeDeltaToList(eq, a1, l1).isEmpty).toBe(true);
+        expect(IndexListDeltaExt.computeDeltaToList(eq, a2, l2).isEmpty).toBe(true);
+        const d12 = IndexListDeltaExt.computeDeltaToList(eq, a1, l2);
+        const d21 = IndexListDeltaExt.computeDeltaToList(eq, a2, l1);
+        expect(IndexListDeltaExt.applyDelta(a1, d12).state.toList()).toEqual(l2);
+        expect(IndexListDeltaExt.applyDelta(a2, d21).state.toList()).toEqual(l1);
+      }),
+    );
+  });
+
+  test("sub returns the int-bounded sub-range", () => {
+    fc.assert(
+      fc.property(
+        arbList,
+        fc.integer({ min: 0, max: 100 }),
+        fc.integer({ min: 0, max: 100 }),
+        (l, oRaw, cRaw) => {
+          const ll = IndexList.ofList(l);
+          const o = ll.count > 0 ? oRaw % ll.count : 0;
+          const c = ll.count > 0 ? cRaw % ll.count : 0;
+          const ref = l.slice(o, o + c);
+          expect(ll.sub(o, c).toList()).toEqual(ref);
+        },
+      ),
+    );
   });
 });

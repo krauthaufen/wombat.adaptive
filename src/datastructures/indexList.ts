@@ -299,10 +299,136 @@ export class IndexList<T> implements Iterable<T> {
     return IndexList.ofSeq(elements);
   }
 
+  /// Creates an IndexList covering the integer range [lower, upper].
+  static range(lower: number, upper: number): IndexList<number> {
+    const out: number[] = [];
+    for (let i = lower; i <= upper; i++) out.push(i);
+    return IndexList.ofArray(out);
+  }
+
+  /// Creates an IndexList of the given length, populated by calling
+  /// `initializer` for each index in [0, length).
+  static init<T>(length: number, initializer: (i: number) => T): IndexList<T> {
+    if (length < 0) throw new Error("IndexList.init: negative length");
+    const out: T[] = new Array(length);
+    for (let i = 0; i < length; i++) out[i] = initializer(i);
+    return IndexList.ofArray(out);
+  }
+
   /** @internal */
   static fromMap<T>(content: MapExt<Index, T>): IndexList<T> {
     if (content.isEmpty) return IndexList.empty<T>();
     return new IndexList<T>(content.minKey, content.maxKey, content);
+  }
+
+  // ----- additional transforms -----
+
+  /// Reverses the value sequence while preserving the actual Index
+  /// keys (so `minIndex` and `maxIndex` are stable).
+  rev(): IndexList<T> {
+    if (this.count <= 1) return this;
+    const arr = this._content.toArray();
+    let res = MapExt.empty<Index, T>(indexCmp);
+    let o = arr.length - 1;
+    for (let i = 0; i < arr.length; i++) {
+      const k = arr[i]![0];
+      const v = arr[o]![1];
+      res = res.add(k, v);
+      o -= 1;
+    }
+    return new IndexList<T>(this._l, this._h, res);
+  }
+
+  /// Sub-range: `count` elements starting at int position `offset`.
+  sub(offset: number, count: number): IndexList<T> {
+    if (count <= 0) return IndexList.empty<T>();
+    return this.skipFirst(offset).takeFirst(count);
+  }
+
+  /// Sort by a key projection.
+  sortBy<U>(mapping: (t: T) => U, compare?: (a: U, b: U) => number): IndexList<T> {
+    const cmp = compare ?? ((a: U, b: U) => (a < b ? -1 : a > b ? 1 : 0));
+    const sorted = this.toList().slice().sort((a, b) => cmp(mapping(a), mapping(b)));
+    return IndexList.ofArray(sorted);
+  }
+  sortByDescending<U>(
+    mapping: (t: T) => U,
+    compare?: (a: U, b: U) => number,
+  ): IndexList<T> {
+    const cmp = compare ?? ((a: U, b: U) => (a < b ? -1 : a > b ? 1 : 0));
+    const sorted = this.toList().slice().sort((a, b) => -cmp(mapping(a), mapping(b)));
+    return IndexList.ofArray(sorted);
+  }
+  sortWith(compare: (a: T, b: T) => number): IndexList<T> {
+    return IndexList.ofArray(this.toList().slice().sort(compare));
+  }
+  sort(): IndexList<T> {
+    return this.sortBy((x) => x);
+  }
+  sortDescending(): IndexList<T> {
+    return this.sortByDescending((x) => x);
+  }
+
+  /// Maps each element to a list and concatenates.
+  collect<U>(mapping: (t: T) => IndexList<U>): IndexList<U> {
+    let out = IndexList.empty<U>();
+    this.iter((_i, v) => {
+      for (const u of mapping(v)) out = out.add(u);
+    });
+    return out;
+  }
+
+  /// Numeric sum.
+  sum(this: IndexList<number>): number {
+    let s = 0;
+    for (const v of this) s += v;
+    return s;
+  }
+  sumBy<U extends number>(mapping: (t: T) => U): number {
+    let s = 0;
+    for (const v of this) s += mapping(v) as number;
+    return s;
+  }
+  average(this: IndexList<number>): number {
+    if (this.count === 0) throw new Error("IndexList.average: empty list");
+    let s = 0;
+    for (const v of this) s += v;
+    return s / this.count;
+  }
+  averageBy<U extends number>(mapping: (t: T) => U): number {
+    if (this.count === 0) throw new Error("IndexList.averageBy: empty list");
+    let s = 0;
+    for (const v of this) s += mapping(v) as number;
+    return s / this.count;
+  }
+
+  /// Splits a list of pairs into two lists.
+  static unzip<A, B>(l: IndexList<readonly [A, B]>): [IndexList<A>, IndexList<B>] {
+    return [l.map((_i, p) => p[0]), l.map((_i, p) => p[1])];
+  }
+
+  /// Splits a list of triples into three lists.
+  static unzip3<A, B, C>(
+    l: IndexList<readonly [A, B, C]>,
+  ): [IndexList<A>, IndexList<B>, IndexList<C>] {
+    return [
+      l.map((_i, p) => p[0]),
+      l.map((_i, p) => p[1]),
+      l.map((_i, p) => p[2]),
+    ];
+  }
+
+  /// Structural equality on values, ignoring identity of Index keys.
+  /// (Two IndexLists holding the same values at the same positions
+  /// compare equal even if their Indices differ.)
+  equalsByValues(other: IndexList<T>): boolean {
+    if (this.count !== other.count) return false;
+    const a = this.toList();
+    const b = other.toList();
+    for (let i = 0; i < a.length; i++) {
+      if (!Object.is(a[i], b[i])) return false;
+    }
+    return true;
   }
 }
 
@@ -316,6 +442,23 @@ export const IndexListOps = {
   ofSeq: <T>(s: Iterable<T>) => IndexList.ofSeq(s),
   ofArray: <T>(a: T[]) => IndexList.ofArray(a),
   ofList: <T>(a: T[]) => IndexList.ofList(a),
+  range: (lo: number, hi: number) => IndexList.range(lo, hi),
+  init: <T>(n: number, f: (i: number) => T) => IndexList.init(n, f),
+  unzip: <A, B>(l: IndexList<readonly [A, B]>) => IndexList.unzip(l),
+  unzip3: <A, B, C>(l: IndexList<readonly [A, B, C]>) => IndexList.unzip3(l),
+  rev: <T>(l: IndexList<T>) => l.rev(),
+  sub: <T>(o: number, c: number, l: IndexList<T>) => l.sub(o, c),
+  collect: <T, U>(f: (t: T) => IndexList<U>, l: IndexList<T>) => l.collect(f),
+  sortBy: <T, U>(f: (t: T) => U, l: IndexList<T>) => l.sortBy(f),
+  sortByDescending: <T, U>(f: (t: T) => U, l: IndexList<T>) => l.sortByDescending(f),
+  sortWith: <T>(cmp: (a: T, b: T) => number, l: IndexList<T>) => l.sortWith(cmp),
+  sort: <T>(l: IndexList<T>) => l.sort(),
+  sortDescending: <T>(l: IndexList<T>) => l.sortDescending(),
+  sum: (l: IndexList<number>) => l.sum(),
+  sumBy: <T, U extends number>(f: (t: T) => U, l: IndexList<T>) => l.sumBy(f),
+  average: (l: IndexList<number>) => l.average(),
+  averageBy: <T, U extends number>(f: (t: T) => U, l: IndexList<T>) => l.averageBy(f),
+  tryGetPositionByIndex: <T>(idx: Index, l: IndexList<T>) => l.tryGetPosition(idx),
   count: <T>(l: IndexList<T>) => l.count,
   isEmpty: <T>(l: IndexList<T>) => l.isEmpty,
   add: <T>(v: T, l: IndexList<T>) => l.add(v),

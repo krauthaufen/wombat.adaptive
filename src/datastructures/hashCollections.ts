@@ -1844,6 +1844,24 @@ const SetNodeOps = {
     ];
   },
 
+  hash<K>(acc: number, node: SetNode<K> | null): number {
+    if (node === null) return acc;
+    if (node.isLeaf) {
+      const leaf = node as SetLeaf<K>;
+      let cnt = 1;
+      let cur = leaf.setNext;
+      while (cur !== null) {
+        cnt += 1;
+        cur = cur.setNext;
+      }
+      return combineHash(acc, combineHash(leaf.hash, cnt));
+    }
+    const inner = node as Inner<K>;
+    const lh = SetNodeOps.hash(acc, inner.left);
+    const nh = combineHash(lh, combineHash(inner.prefix, inner.mask));
+    return SetNodeOps.hash(nh, inner.right);
+  },
+
   applyDelta<K, D, DOut>(
     cmp: IEqualityComparer<K>,
     apply: (k: K, existed: boolean, d: D) => [boolean, DOut | undefined],
@@ -2937,6 +2955,11 @@ export class HashSet<K> implements Iterable<K> {
     }
   }
 
+  /// Structural hash — order-independent, matches `setEquals`.
+  getHash(): number {
+    return SetNodeOps.hash(0, this._root);
+  }
+
   setEquals(other: HashSet<K>): boolean {
     if (this.count !== other.count) return false;
     return SetNodeOps.equals(this._cmp, this._root, other._root);
@@ -3094,6 +3117,21 @@ export class HashMap<K, V> implements Iterable<[K, V]> {
   }
   alterV(key: K, update: (existing: V | undefined) => V | undefined): HashMap<K, V> {
     return this.alter(key, update);
+  }
+
+  /// Like `alter` but cannot remove. Receives the existing value (or
+  /// undefined) and must return a value to set.
+  update(key: K, mapping: (existing: V | undefined) => V): HashMap<K, V> {
+    return this.alter(key, mapping);
+  }
+
+  /// Pairs this map's values with `other`'s, calling `mapping` for
+  /// every key in either map.
+  map2<T, U>(
+    other: HashMap<K, T>,
+    mapping: (k: K, v: V | undefined, t: T | undefined) => U,
+  ): HashMap<K, U> {
+    return this.choose2V<T, U>(other, mapping);
   }
 
   iter(action: (k: K, v: V) => void): void {
@@ -3289,6 +3327,13 @@ export class HashMap<K, V> implements Iterable<[K, V]> {
   equals(other: HashMap<K, V>): boolean {
     if (this.count !== other.count) return false;
     return MapNodeOps.equals<K, V>(this._cmp, this._root, other._root);
+  }
+
+  /// Structural hash — matches the equality contract on
+  /// {key, value count, hash bucket layout}. Stable across
+  /// insertion-order variations.
+  getHash(): number {
+    return SetNodeOps.hash(0, this._root);
   }
 
   static empty<K, V>(cmp?: IEqualityComparer<K>): HashMap<K, V> {
