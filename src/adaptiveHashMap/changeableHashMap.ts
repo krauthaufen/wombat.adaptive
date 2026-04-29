@@ -12,20 +12,22 @@ import {
 import { HashMapDeltaExt } from "../datastructures/deltas.js";
 import { hashMapTrace } from "../traceable/hashMapTraceable.js";
 import { History } from "../traceable/history.js";
-import type { amap, IHashMapReader } from "./adaptiveHashMap.js";
+import { AbstractAmap, type IHashMapReader } from "./adaptiveHashMap.js";
 
 /**
  * Changeable adaptive map that allows mutation by user-code and
  * implements `amap`.
  */
 export class ChangeableHashMap<K, V>
-  implements amap<K, V>, Iterable<[K, V]>
+  extends AbstractAmap<K, V>
+  implements Iterable<[K, V]>
 {
-  readonly isConstant = false;
-  readonly history: History<HashMap<K, V>, HashMapDelta<K, V>>;
-  readonly content: aval<HashMap<K, V>>;
+  override readonly isConstant = false;
+  override readonly history: History<HashMap<K, V>, HashMapDelta<K, V>>;
+  override readonly content: aval<HashMap<K, V>>;
 
   constructor(initial?: HashMap<K, V> | Iterable<[K, V]>) {
+    super();
     const init =
       initial === undefined
         ? HashMap.empty<K, V>()
@@ -45,10 +47,10 @@ export class ChangeableHashMap<K, V>
     });
   }
 
-  get count(): number {
+  get currentCount(): number {
     return this.history.state.count;
   }
-  get isEmpty(): boolean {
+  get currentIsEmpty(): boolean {
     return this.history.state.isEmpty;
   }
   containsKey(key: K): boolean {
@@ -148,7 +150,7 @@ export class ChangeableHashMap<K, V>
     );
   }
 
-  getReader(): IHashMapReader<K, V> {
+  override getReader(): IHashMapReader<K, V> {
     return this.history.newReader();
   }
 
@@ -156,12 +158,12 @@ export class ChangeableHashMap<K, V>
     yield* this.history.state;
   }
 
-  toString(): string {
+  override toString(): string {
     const items = [...this.history.state]
       .slice(0, 5)
       .map(([k, v]) => `${String(k)}=>${String(v)}`)
       .join("; ");
-    return `cmap [${items}${this.count > 5 ? "; ..." : ""}]`;
+    return `cmap [${items}${this.currentCount > 5 ? "; ..." : ""}]`;
   }
 }
 

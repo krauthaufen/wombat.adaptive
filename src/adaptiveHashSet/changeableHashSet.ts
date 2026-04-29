@@ -12,18 +12,19 @@ import {
   CountingHashSet,
 } from "../traceable/countingHashSet.js";
 import { History } from "../traceable/history.js";
-import type { aset, IHashSetReader } from "./adaptiveHashSet.js";
+import { AbstractAset, type IHashSetReader } from "./adaptiveHashSet.js";
 
 /**
  * Changeable adaptive set that allows mutation by user-code and
  * implements `aset`.
  */
-export class ChangeableHashSet<T> implements aset<T>, Iterable<T> {
-  readonly isConstant = false;
-  readonly history: History<CountingHashSet<T>, HashSetDelta<T>>;
-  readonly content: aval<HashSet<T>>;
+export class ChangeableHashSet<T> extends AbstractAset<T> implements Iterable<T> {
+  override readonly isConstant = false;
+  override readonly history: History<CountingHashSet<T>, HashSetDelta<T>>;
+  override readonly content: aval<HashSet<T>>;
 
   constructor(initial?: HashSet<T> | Iterable<T>) {
+    super();
     const init =
       initial === undefined
         ? HashSet.empty<T>()
@@ -45,18 +46,18 @@ export class ChangeableHashSet<T> implements aset<T>, Iterable<T> {
     });
   }
 
-  /** The number of entries currently in the set. */
-  get count(): number {
+  /** The number of entries currently in the set (synchronous, untracked). */
+  get currentCount(): number {
     return this.history.state.count;
   }
 
-  /** Is the set currently empty? */
-  get isEmpty(): boolean {
+  /** Is the set currently empty? (synchronous, untracked) */
+  get currentIsEmpty(): boolean {
     return this.history.state.isEmpty;
   }
 
-  /** Checks whether the given value is contained. */
-  contains(value: T): boolean {
+  /** Synchronously checks whether the given value is contained. */
+  containsNow(value: T): boolean {
     return this.history.state.contains(value);
   }
 
@@ -152,7 +153,7 @@ export class ChangeableHashSet<T> implements aset<T>, Iterable<T> {
   }
 
   /** Creates an adaptive reader for the set. */
-  getReader(): IHashSetReader<T> {
+  override getReader(): IHashSetReader<T> {
     return this.history.newReader();
   }
 
@@ -160,12 +161,12 @@ export class ChangeableHashSet<T> implements aset<T>, Iterable<T> {
     yield* this.value;
   }
 
-  toString(): string {
+  override toString(): string {
     const items = [...this.history.state]
       .slice(0, 5)
       .map((x) => String(x))
       .join("; ");
-    return `cset [${items}${this.count > 5 ? "; ..." : ""}]`;
+    return `cset [${items}${this.currentCount > 5 ? "; ..." : ""}]`;
   }
 }
 

@@ -24,7 +24,7 @@ describe("amap smoke", () => {
       [1, 10],
       [2, 20],
     ]);
-    expect(m.count).toBe(2);
+    expect(m.currentCount).toBe(2);
     expect(m.containsKey(1)).toBe(true);
 
     const r = m.getReader();

@@ -27,28 +27,28 @@ describe("[CSet] contains/isEmpty/count", () => {
   test("basic mutation flips state", () => {
     const set = cset(HashSet.ofList([1, 2]));
 
-    expect(set.isEmpty).toBe(false);
-    expect(set.count).toBe(2);
-    expect(set.contains(1)).toBe(true);
-    expect(set.contains(2)).toBe(true);
+    expect(set.currentIsEmpty).toBe(false);
+    expect(set.currentCount).toBe(2);
+    expect(set.containsNow(1)).toBe(true);
+    expect(set.containsNow(2)).toBe(true);
 
     transact(() => {
       expect(set.remove(2)).toBe(true);
     });
 
-    expect(set.isEmpty).toBe(false);
-    expect(set.count).toBe(1);
-    expect(set.contains(1)).toBe(true);
-    expect(set.contains(2)).toBe(false);
+    expect(set.currentIsEmpty).toBe(false);
+    expect(set.currentCount).toBe(1);
+    expect(set.containsNow(1)).toBe(true);
+    expect(set.containsNow(2)).toBe(false);
 
     transact(() => {
       expect(set.remove(1)).toBe(true);
     });
 
-    expect(set.isEmpty).toBe(true);
-    expect(set.count).toBe(0);
-    expect(set.contains(1)).toBe(false);
-    expect(set.contains(2)).toBe(false);
+    expect(set.currentIsEmpty).toBe(true);
+    expect(set.currentCount).toBe(0);
+    expect(set.containsNow(1)).toBe(false);
+    expect(set.containsNow(2)).toBe(false);
   });
 });
 
@@ -251,7 +251,7 @@ describe("[ASet] content bind", () => {
     for (let i = 1; i <= 50; i++) {
       transact(() => set.add(i));
       const cnt = asetForce(res).count;
-      expect(cnt).toBe(set.count);
+      expect(cnt).toBe(set.currentCount);
     }
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "@aardworx/adaptive",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript port of FSharp.Data.Adaptive — incremental adaptive computations with aval/aset/amap/alist.",
   "license": "MIT",
   "author": "krauthaufen",

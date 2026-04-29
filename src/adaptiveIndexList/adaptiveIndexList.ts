@@ -64,37 +64,163 @@ export interface alist<T> {
   readonly content: aval<IndexList<T>>;
   getReader(): IIndexListReader<T>;
   readonly history: History<IndexList<T>, IndexListDelta<T>> | undefined;
+
+  // transforms
+  mapi<R>(mapping: (i: Index, t: T) => R): alist<R>;
+  map<R>(mapping: (t: T) => R): alist<R>;
+  choosei<R>(mapping: (i: Index, t: T) => R | undefined): alist<R>;
+  choose<R>(mapping: (t: T) => R | undefined): alist<R>;
+  filteri(predicate: (i: Index, t: T) => boolean): alist<T>;
+  filter(predicate: (t: T) => boolean): alist<T>;
+  mapAi<R>(mapping: (i: Index, t: T) => aval<R>): alist<R>;
+  mapA<R>(mapping: (t: T) => aval<R>): alist<R>;
+  chooseAi<R>(mapping: (i: Index, t: T) => aval<R | undefined>): alist<R>;
+  chooseA<R>(mapping: (t: T) => aval<R | undefined>): alist<R>;
+  filterAi(predicate: (i: Index, t: T) => aval<boolean>): alist<T>;
+  filterA(predicate: (t: T) => aval<boolean>): alist<T>;
+  collecti<R>(mapping: (i: Index, t: T) => alist<R>): alist<R>;
+  collect<R>(mapping: (t: T) => alist<R>): alist<R>;
+  collectSeq<R>(mapping: (t: T) => Iterable<R>): alist<R>;
+  indexed(): alist<[Index, T]>;
+  append(other: alist<T>): alist<T>;
+  sortByi<K>(mapping: (i: Index, t: T) => K, compare?: (a: K, b: K) => number): alist<T>;
+  sortBy<K>(mapping: (t: T) => K, compare?: (a: K, b: K) => number): alist<T>;
+  sortWith(compare: (a: T, b: T) => number): alist<T>;
+  sort(): alist<T>;
+  sortDescending(): alist<T>;
+  rev(): alist<T>;
+  subA(offset: aval<number>, count: aval<number>): alist<T>;
+  sub(offset: number, count: number): alist<T>;
+  take(count: number): alist<T>;
+  takeA(count: aval<number>): alist<T>;
+  skip(count: number): alist<T>;
+  skipA(count: aval<number>): alist<T>;
+  pairwise(): alist<[T, T]>;
+  pairwiseCyclic(): alist<[T, T]>;
+  // queries returning aval
+  tryGet(index: Index): aval<T | undefined>;
+  tryAt(pos: number): aval<T | undefined>;
+  tryFirst(): aval<T | undefined>;
+  tryLast(): aval<T | undefined>;
+  isEmpty(): aval<boolean>;
+  count(): aval<number>;
+  reduce<S, V>(reduction: AdaptiveReduction<T, S, V>): aval<V>;
+  reduceBy<T2, S, V>(reduction: AdaptiveReduction<T2, S, V>, mapping: (t: T) => T2): aval<V>;
+  reduceByA<B, S, V>(reduction: AdaptiveReduction<B, S, V>, mapping: (t: T) => aval<B>): aval<V>;
+  fold<S>(add: (s: S, v: T) => S, zero: S): aval<S>;
+  foldGroup<S>(add: (s: S, v: T) => S, subtract: (s: S, v: T) => S, zero: S): aval<S>;
+  foldHalfGroup<S>(add: (s: S, v: T) => S, trySubtract: (s: S, v: T) => S | undefined, zero: S): aval<S>;
+  forall(predicate: (t: T) => boolean): aval<boolean>;
+  exists(predicate: (t: T) => boolean): aval<boolean>;
+  forallA(predicate: (t: T) => aval<boolean>): aval<boolean>;
+  existsA(predicate: (t: T) => aval<boolean>): aval<boolean>;
+  countBy(predicate: (t: T) => boolean): aval<number>;
+  countByA(predicate: (t: T) => aval<boolean>): aval<number>;
+  sumBy(mapping: (t: T) => number): aval<number>;
+  sumByA(mapping: (t: T) => aval<number>): aval<number>;
+  averageBy(mapping: (t: T) => number): aval<number>;
+  averageByA(mapping: (t: T) => aval<number>): aval<number>;
+  tryMin(compare?: (a: T, b: T) => number): aval<T | undefined>;
+  tryMax(compare?: (a: T, b: T) => number): aval<T | undefined>;
+  toAVal(): aval<IndexList<T>>;
+  force(): IndexList<T>;
 }
 
 export function force<T>(list: alist<T>): IndexList<T> {
   return AVal.force(list.content);
 }
 
+export abstract class AbstractAlist<T> implements alist<T> {
+  abstract readonly isConstant: boolean;
+  abstract readonly content: aval<IndexList<T>>;
+  abstract readonly history: History<IndexList<T>, IndexListDelta<T>> | undefined;
+  abstract getReader(): IIndexListReader<T>;
+
+  mapi<R>(mapping: (i: Index, t: T) => R): alist<R> { return mapi(mapping, this); }
+  map<R>(mapping: (t: T) => R): alist<R> { return map(mapping, this); }
+  choosei<R>(mapping: (i: Index, t: T) => R | undefined): alist<R> { return choosei(mapping, this); }
+  choose<R>(mapping: (t: T) => R | undefined): alist<R> { return choose(mapping, this); }
+  filteri(predicate: (i: Index, t: T) => boolean): alist<T> { return filteri(predicate, this); }
+  filter(predicate: (t: T) => boolean): alist<T> { return filter(predicate, this); }
+  mapAi<R>(mapping: (i: Index, t: T) => aval<R>): alist<R> { return mapAi(mapping, this); }
+  mapA<R>(mapping: (t: T) => aval<R>): alist<R> { return mapA(mapping, this); }
+  chooseAi<R>(mapping: (i: Index, t: T) => aval<R | undefined>): alist<R> { return chooseAi(mapping, this); }
+  chooseA<R>(mapping: (t: T) => aval<R | undefined>): alist<R> { return chooseA(mapping, this); }
+  filterAi(predicate: (i: Index, t: T) => aval<boolean>): alist<T> { return filterAi(predicate, this); }
+  filterA(predicate: (t: T) => aval<boolean>): alist<T> { return filterA(predicate, this); }
+  collecti<R>(mapping: (i: Index, t: T) => alist<R>): alist<R> { return collecti(mapping, this); }
+  collect<R>(mapping: (t: T) => alist<R>): alist<R> { return collect(mapping, this); }
+  collectSeq<R>(mapping: (t: T) => Iterable<R>): alist<R> { return collectSeq(mapping, this); }
+  indexed(): alist<[Index, T]> { return indexed(this); }
+  append(other: alist<T>): alist<T> { return append(this, other); }
+  sortByi<K>(mapping: (i: Index, t: T) => K, compare?: (a: K, b: K) => number): alist<T> { return sortByi(mapping, this, compare); }
+  sortBy<K>(mapping: (t: T) => K, compare?: (a: K, b: K) => number): alist<T> { return sortBy(mapping, this, compare); }
+  sortWith(compare: (a: T, b: T) => number): alist<T> { return sortWith(compare, this); }
+  sort(): alist<T> { return sort(this); }
+  sortDescending(): alist<T> { return sortDescending(this); }
+  rev(): alist<T> { return rev(this); }
+  subA(offset: aval<number>, count: aval<number>): alist<T> { return subA(offset, count, this); }
+  sub(offset: number, count: number): alist<T> { return sub(offset, count, this); }
+  take(count: number): alist<T> { return take(count, this); }
+  takeA(count: aval<number>): alist<T> { return takeA(count, this); }
+  skip(count: number): alist<T> { return skip(count, this); }
+  skipA(count: aval<number>): alist<T> { return skipA(count, this); }
+  pairwise(): alist<[T, T]> { return pairwise(this); }
+  pairwiseCyclic(): alist<[T, T]> { return pairwiseCyclic(this); }
+  tryGet(index: Index): aval<T | undefined> { return tryGet(index, this); }
+  tryAt(pos: number): aval<T | undefined> { return tryAt(pos, this); }
+  tryFirst(): aval<T | undefined> { return tryFirst(this); }
+  tryLast(): aval<T | undefined> { return tryLast(this); }
+  isEmpty(): aval<boolean> { return isEmpty(this); }
+  count(): aval<number> { return count(this); }
+  reduce<S, V>(reduction: AdaptiveReduction<T, S, V>): aval<V> { return reduce(reduction, this); }
+  reduceBy<T2, S, V>(reduction: AdaptiveReduction<T2, S, V>, mapping: (t: T) => T2): aval<V> { return reduceBy(reduction, (_i, v) => mapping(v), this); }
+  reduceByA<B, S, V>(reduction: AdaptiveReduction<B, S, V>, mapping: (t: T) => aval<B>): aval<V> { return reduceByA(reduction, (_i, v) => mapping(v), this); }
+  fold<S>(add: (s: S, v: T) => S, zero: S): aval<S> { return fold(add, zero, this); }
+  foldGroup<S>(add: (s: S, v: T) => S, subtract: (s: S, v: T) => S, zero: S): aval<S> { return foldGroup(add, subtract, zero, this); }
+  foldHalfGroup<S>(add: (s: S, v: T) => S, trySubtract: (s: S, v: T) => S | undefined, zero: S): aval<S> { return foldHalfGroup(add, trySubtract, zero, this); }
+  forall(predicate: (t: T) => boolean): aval<boolean> { return forall(predicate, this); }
+  exists(predicate: (t: T) => boolean): aval<boolean> { return exists(predicate, this); }
+  forallA(predicate: (t: T) => aval<boolean>): aval<boolean> { return forallA(predicate, this); }
+  existsA(predicate: (t: T) => aval<boolean>): aval<boolean> { return existsA(predicate, this); }
+  countBy(predicate: (t: T) => boolean): aval<number> { return countBy(predicate, this); }
+  countByA(predicate: (t: T) => aval<boolean>): aval<number> { return countByA(predicate, this); }
+  sumBy(mapping: (t: T) => number): aval<number> { return sumBy(mapping, this); }
+  sumByA(mapping: (t: T) => aval<number>): aval<number> { return sumByA(mapping, this); }
+  averageBy(mapping: (t: T) => number): aval<number> { return averageBy(mapping, this); }
+  averageByA(mapping: (t: T) => aval<number>): aval<number> { return averageByA(mapping, this); }
+  tryMin(compare?: (a: T, b: T) => number): aval<T | undefined> { return tryMin(this, compare); }
+  tryMax(compare?: (a: T, b: T) => number): aval<T | undefined> { return tryMax(this, compare); }
+  toAVal(): aval<IndexList<T>> { return toAVal(this); }
+  force(): IndexList<T> { return force(this); }
+}
+
 // ---------------------------------------------------------------------------
 // Empty / Constant / Impl
 // ---------------------------------------------------------------------------
 
-class EmptyList<T> implements alist<T> {
-  readonly isConstant = true;
-  readonly content: aval<IndexList<T>> = avalConstant(IndexList.empty<T>());
-  readonly history = undefined;
+class EmptyList<T> extends AbstractAlist<T> {
+  override readonly isConstant = true;
+  override readonly content: aval<IndexList<T>> = avalConstant(IndexList.empty<T>());
+  override readonly history = undefined;
   private static _cached: EmptyList<unknown> | null = null;
   static instance<T>(): alist<T> {
     if (!EmptyList._cached) EmptyList._cached = new EmptyList<unknown>();
     return EmptyList._cached as unknown as alist<T>;
   }
-  getReader(): IIndexListReader<T> {
+  override getReader(): IIndexListReader<T> {
     return new EmptyReader<IndexList<T>, IndexListDelta<T>>(indexListTrace<T>());
   }
 }
 
-class ConstantList<T> implements alist<T> {
-  readonly isConstant = true;
+class ConstantList<T> extends AbstractAlist<T> {
+  override readonly isConstant = true;
   private readonly _create: () => IndexList<T>;
   private _cached: IndexList<T> | null = null;
-  readonly content: aval<IndexList<T>>;
-  readonly history = undefined;
+  override readonly content: aval<IndexList<T>>;
+  override readonly history = undefined;
   constructor(create: () => IndexList<T>) {
+    super();
     this._create = create;
     this.content = avalDelay(() => this.lazy());
   }
@@ -102,7 +228,7 @@ class ConstantList<T> implements alist<T> {
     if (this._cached === null) this._cached = this._create();
     return this._cached;
   }
-  getReader(): IIndexListReader<T> {
+  override getReader(): IIndexListReader<T> {
     return new ConstantReader<IndexList<T>, IndexListDelta<T>>(
       indexListTrace<T>(),
       () =>
@@ -112,11 +238,12 @@ class ConstantList<T> implements alist<T> {
   }
 }
 
-class AdaptiveIndexListImpl<T> implements alist<T> {
-  readonly isConstant = false;
-  readonly history: History<IndexList<T>, IndexListDelta<T>>;
-  readonly content: aval<IndexList<T>>;
+class AdaptiveIndexListImpl<T> extends AbstractAlist<T> {
+  override readonly isConstant = false;
+  override readonly history: History<IndexList<T>, IndexListDelta<T>>;
+  override readonly content: aval<IndexList<T>>;
   constructor(createReader: () => IOpReader<IndexListDelta<T>>) {
+    super();
     this.history = History.ofReader<IndexList<T>, IndexListDelta<T>>(
       indexListTrace<T>(),
       createReader,
@@ -126,7 +253,7 @@ class AdaptiveIndexListImpl<T> implements alist<T> {
       return this.history.state;
     });
   }
-  getReader(): IIndexListReader<T> {
+  override getReader(): IIndexListReader<T> {
     return this.history.newReader();
   }
 }
@@ -1615,25 +1742,24 @@ export function bind<A, B>(
   return ofReaderInternal<B>(() => new BindReader<A, B>(value, mapping));
 }
 
-export function bind2<A, B, C>(
-  mapping: (a: A, b: B) => alist<C>,
-  va: aval<A>,
-  vb: aval<B>,
-): alist<C> {
-  const zipped: aval<[A, B]> = AVal.zip(va, vb).map((a, b) => [a, b] as [A, B]);
-  return bind<[A, B], C>(([a, b]) => mapping(a, b), zipped);
+type AValValuesList<T extends ReadonlyArray<aval<unknown>>> = {
+  [K in keyof T]: T[K] extends aval<infer U> ? U : never;
+};
+
+export class ListZipped<Ts extends readonly unknown[]> {
+  private readonly _avals: ReadonlyArray<aval<unknown>>;
+  constructor(avals: ReadonlyArray<aval<unknown>>) { this._avals = avals; }
+  bind<R>(f: (...vs: Ts) => alist<R>): alist<R> {
+    const avals = this._avals;
+    const tuple: aval<Ts> = AVal.custom((tok) => {
+      return avals.map((v) => (v as unknown as { getValue(t: AdaptiveToken): unknown }).getValue(tok)) as unknown as Ts;
+    });
+    return bind((t) => f(...t), tuple);
+  }
 }
 
-export function bind3<A, B, C, D>(
-  mapping: (a: A, b: B, c: C) => alist<D>,
-  va: aval<A>,
-  vb: aval<B>,
-  vc: aval<C>,
-): alist<D> {
-  const zipped: aval<[A, B, C]> = AVal.zip(va, vb, vc).map(
-    (a, b, c) => [a, b, c] as [A, B, C],
-  );
-  return bind<[A, B, C], D>(([a, b, c]) => mapping(a, b, c), zipped);
+export function zip<T extends readonly aval<unknown>[]>(...vals: T): ListZipped<AValValuesList<T>> {
+  return new ListZipped<AValValuesList<T>>(vals);
 }
 
 export function sortByi<A, B>(
@@ -2002,8 +2128,7 @@ export const AList = {
   concat,
   append,
   bind,
-  bind2,
-  bind3,
+  zip,
   sortByi,
   sortBy,
   sortWith,

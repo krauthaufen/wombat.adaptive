@@ -82,11 +82,96 @@ export interface amap<K, V> {
   getReader(): IHashMapReader<K, V>;
   /** The underlying History instance for the amap (if any). */
   readonly history: History<HashMap<K, V>, HashMapDelta<K, V>> | undefined;
+
+  // transforms
+  map<R>(mapping: (k: K, v: V) => R): amap<K, R>;
+  mapValue<R>(mapping: (v: V) => R): amap<K, R>;
+  choose<R>(mapping: (k: K, v: V) => R | undefined): amap<K, R>;
+  chooseValue<R>(mapping: (v: V) => R | undefined): amap<K, R>;
+  filter(predicate: (k: K, v: V) => boolean): amap<K, V>;
+  filterValue(predicate: (v: V) => boolean): amap<K, V>;
+  intersectWith<V2, R>(other: amap<K, V2>, resolve: (k: K, a: V, b: V2) => R): amap<K, R>;
+  intersect<V2>(other: amap<K, V2>): amap<K, [V, V2]>;
+  unionWith(other: amap<K, V>, resolve: (k: K, a: V, b: V) => V): amap<K, V>;
+  union(other: amap<K, V>): amap<K, V>;
+  mapA<R>(mapping: (k: K, v: V) => aval<R>): amap<K, R>;
+  chooseA<R>(mapping: (k: K, v: V) => aval<R | undefined>): amap<K, R>;
+  filterA(predicate: (k: K, v: V) => aval<boolean>): amap<K, V>;
+  toASet(): aset<KeyValuePair<K, V>>;
+  toASetValues(): aset<V>;
+  // queries returning aval
+  tryFind(key: K): aval<V | undefined>;
+  find(key: K): aval<V>;
+  isEmpty(): aval<boolean>;
+  count(): aval<number>;
+  reduce<S, R>(reduction: AdaptiveReduction<V, S, R>): aval<R>;
+  reduceBy<V2, S, R>(reduction: AdaptiveReduction<V2, S, R>, mapping: (k: K, v: V) => V2): aval<R>;
+  reduceByA<V2, S, R>(reduction: AdaptiveReduction<V2, S, R>, mapping: (k: K, v: V) => aval<V2>): aval<R>;
+  forall(predicate: (k: K, v: V) => boolean): aval<boolean>;
+  exists(predicate: (k: K, v: V) => boolean): aval<boolean>;
+  forallA(predicate: (k: K, v: V) => aval<boolean>): aval<boolean>;
+  existsA(predicate: (k: K, v: V) => aval<boolean>): aval<boolean>;
+  countBy(predicate: (k: K, v: V) => boolean): aval<number>;
+  countByA(predicate: (k: K, v: V) => aval<boolean>): aval<number>;
+  sumBy(mapping: (k: K, v: V) => number): aval<number>;
+  sumByA(mapping: (k: K, v: V) => aval<number>): aval<number>;
+  averageBy(mapping: (k: K, v: V) => number): aval<number>;
+  averageByA(mapping: (k: K, v: V) => aval<number>): aval<number>;
+  fold<S>(add: (s: S, k: K, v: V) => S, zero: S): aval<S>;
+  foldGroup<S>(add: (s: S, k: K, v: V) => S, subtract: (s: S, k: K, v: V) => S, zero: S): aval<S>;
+  foldHalfGroup<S>(add: (s: S, k: K, v: V) => S, trySubtract: (s: S, k: K, v: V) => S | undefined, zero: S): aval<S>;
+  toAVal(): aval<HashMap<K, V>>;
+  force(): HashMap<K, V>;
 }
 
 /** Convenience: pull the current content of an amap (untracked). */
 export function force<K, V>(map: amap<K, V>): HashMap<K, V> {
   return AVal.force(map.content);
+}
+
+export abstract class AbstractAmap<K, V> implements amap<K, V> {
+  abstract readonly isConstant: boolean;
+  abstract readonly content: aval<HashMap<K, V>>;
+  abstract readonly history: History<HashMap<K, V>, HashMapDelta<K, V>> | undefined;
+  abstract getReader(): IHashMapReader<K, V>;
+
+  map<R>(mapping: (k: K, v: V) => R): amap<K, R> { return map(mapping, this); }
+  mapValue<R>(mapping: (v: V) => R): amap<K, R> { return mapValue(mapping, this); }
+  choose<R>(mapping: (k: K, v: V) => R | undefined): amap<K, R> { return choose(mapping, this); }
+  chooseValue<R>(mapping: (v: V) => R | undefined): amap<K, R> { return chooseValue(mapping, this); }
+  filter(predicate: (k: K, v: V) => boolean): amap<K, V> { return filter(predicate, this); }
+  filterValue(predicate: (v: V) => boolean): amap<K, V> { return filterValue(predicate, this); }
+  intersectWith<V2, R>(other: amap<K, V2>, resolve: (k: K, a: V, b: V2) => R): amap<K, R> { return intersectWith(resolve, this, other); }
+  intersect<V2>(other: amap<K, V2>): amap<K, [V, V2]> { return intersect(this, other); }
+  unionWith(other: amap<K, V>, resolve: (k: K, a: V, b: V) => V): amap<K, V> { return unionWith(resolve, this, other); }
+  union(other: amap<K, V>): amap<K, V> { return union(this, other); }
+  mapA<R>(mapping: (k: K, v: V) => aval<R>): amap<K, R> { return mapA(mapping, this); }
+  chooseA<R>(mapping: (k: K, v: V) => aval<R | undefined>): amap<K, R> { return chooseA(mapping, this); }
+  filterA(predicate: (k: K, v: V) => aval<boolean>): amap<K, V> { return filterA(predicate, this); }
+  toASet(): aset<KeyValuePair<K, V>> { return toASet(this); }
+  toASetValues(): aset<V> { return toASetValues(this); }
+  tryFind(key: K): aval<V | undefined> { return tryFind(key, this); }
+  find(key: K): aval<V> { return find(key, this); }
+  isEmpty(): aval<boolean> { return isEmpty(this); }
+  count(): aval<number> { return count(this); }
+  reduce<S, R>(reduction: AdaptiveReduction<V, S, R>): aval<R> { return reduce(reduction, this); }
+  reduceBy<V2, S, R>(reduction: AdaptiveReduction<V2, S, R>, mapping: (k: K, v: V) => V2): aval<R> { return reduceBy(reduction, mapping, this); }
+  reduceByA<V2, S, R>(reduction: AdaptiveReduction<V2, S, R>, mapping: (k: K, v: V) => aval<V2>): aval<R> { return reduceByA(reduction, mapping, this); }
+  forall(predicate: (k: K, v: V) => boolean): aval<boolean> { return forall(predicate, this); }
+  exists(predicate: (k: K, v: V) => boolean): aval<boolean> { return exists(predicate, this); }
+  forallA(predicate: (k: K, v: V) => aval<boolean>): aval<boolean> { return forallA(predicate, this); }
+  existsA(predicate: (k: K, v: V) => aval<boolean>): aval<boolean> { return existsA(predicate, this); }
+  countBy(predicate: (k: K, v: V) => boolean): aval<number> { return countBy(predicate, this); }
+  countByA(predicate: (k: K, v: V) => aval<boolean>): aval<number> { return countByA(predicate, this); }
+  sumBy(mapping: (k: K, v: V) => number): aval<number> { return sumBy(mapping, this); }
+  sumByA(mapping: (k: K, v: V) => aval<number>): aval<number> { return sumByA(mapping, this); }
+  averageBy(mapping: (k: K, v: V) => number): aval<number> { return averageBy(mapping, this); }
+  averageByA(mapping: (k: K, v: V) => aval<number>): aval<number> { return averageByA(mapping, this); }
+  fold<S>(add: (s: S, k: K, v: V) => S, zero: S): aval<S> { return fold(add, zero, this); }
+  foldGroup<S>(add: (s: S, k: K, v: V) => S, subtract: (s: S, k: K, v: V) => S, zero: S): aval<S> { return foldGroup(add, subtract, zero, this); }
+  foldHalfGroup<S>(add: (s: S, k: K, v: V) => S, trySubtract: (s: S, k: K, v: V) => S | undefined, zero: S): aval<S> { return foldHalfGroup(add, trySubtract, zero, this); }
+  toAVal(): aval<HashMap<K, V>> { return toAVal(this); }
+  force(): HashMap<K, V> { return force(this); }
 }
 
 /**
@@ -116,30 +201,31 @@ export class KeyValuePair<K, V> {
 // Empty / Constant / impl wrappers
 // ---------------------------------------------------------------------------
 
-class EmptyAmap<K, V> implements amap<K, V> {
-  readonly isConstant = true;
-  readonly content: aval<HashMap<K, V>> = avalConstant(HashMap.empty<K, V>());
-  readonly history = undefined;
+class EmptyAmap<K, V> extends AbstractAmap<K, V> {
+  override readonly isConstant = true;
+  override readonly content: aval<HashMap<K, V>> = avalConstant(HashMap.empty<K, V>());
+  override readonly history = undefined;
   private static _cached: EmptyAmap<unknown, unknown> | null = null;
   static instance<K, V>(): amap<K, V> {
     if (!EmptyAmap._cached)
       EmptyAmap._cached = new EmptyAmap<unknown, unknown>();
     return EmptyAmap._cached as unknown as amap<K, V>;
   }
-  getReader(): IHashMapReader<K, V> {
+  override getReader(): IHashMapReader<K, V> {
     return new EmptyReader<HashMap<K, V>, HashMapDelta<K, V>>(
       hashMapTrace<K, V>(),
     );
   }
 }
 
-class ConstantAmap<K, V> implements amap<K, V> {
-  readonly isConstant = true;
+class ConstantAmap<K, V> extends AbstractAmap<K, V> {
+  override readonly isConstant = true;
   private readonly _create: () => HashMap<K, V>;
   private _cached: HashMap<K, V> | null = null;
-  readonly content: aval<HashMap<K, V>>;
-  readonly history = undefined;
+  override readonly content: aval<HashMap<K, V>>;
+  override readonly history = undefined;
   constructor(create: () => HashMap<K, V>) {
+    super();
     this._create = create;
     this.content = avalDelay(() => this.lazy());
   }
@@ -147,7 +233,7 @@ class ConstantAmap<K, V> implements amap<K, V> {
     if (this._cached === null) this._cached = this._create();
     return this._cached;
   }
-  getReader(): IHashMapReader<K, V> {
+  override getReader(): IHashMapReader<K, V> {
     return new ConstantReader<HashMap<K, V>, HashMapDelta<K, V>>(
       hashMapTrace<K, V>(),
       () =>
@@ -160,14 +246,15 @@ class ConstantAmap<K, V> implements amap<K, V> {
   }
 }
 
-class AdaptiveHashMapImpl<K, V> implements amap<K, V> {
-  readonly isConstant = false;
-  readonly history: History<HashMap<K, V>, HashMapDelta<K, V>>;
-  readonly content: aval<HashMap<K, V>>;
+class AdaptiveHashMapImpl<K, V> extends AbstractAmap<K, V> {
+  override readonly isConstant = false;
+  override readonly history: History<HashMap<K, V>, HashMapDelta<K, V>>;
+  override readonly content: aval<HashMap<K, V>>;
 
   constructor(
     createReader: () => IOpReader<HashMapDelta<K, V>>,
   ) {
+    super();
     this.history = History.ofReader<HashMap<K, V>, HashMapDelta<K, V>>(
       hashMapTrace<K, V>(),
       createReader,
@@ -178,7 +265,7 @@ class AdaptiveHashMapImpl<K, V> implements amap<K, V> {
     });
   }
 
-  getReader(): IHashMapReader<K, V> {
+  override getReader(): IHashMapReader<K, V> {
     return this.history.newReader();
   }
 }
@@ -1056,31 +1143,28 @@ export function bind<T, K, V>(
   );
 }
 
-export function bind2<A, B, K, V>(
-  mapping: (a: A, b: B) => amap<K, V>,
-  va: aval<A>,
-  vb: aval<B>,
-): amap<K, V> {
-  // Bridge Zipped → aval<[A,B]> via Zipped.map.
-  const zipped: aval<[A, B]> = AVal.zip(va, vb).map(
-    (a: A, b: B) => [a, b] as [A, B],
-  );
-  return bind<[A, B], K, V>(([a, b]) => mapping(a, b), zipped);
+// ---------------------------------------------------------------------------
+// N-ary combinators — `zip` wrapper
+// ---------------------------------------------------------------------------
+
+type AValValuesMap<T extends ReadonlyArray<aval<unknown>>> = {
+  [K in keyof T]: T[K] extends aval<infer U> ? U : never;
+};
+
+export class MapZipped<Ts extends readonly unknown[]> {
+  private readonly _avals: ReadonlyArray<aval<unknown>>;
+  constructor(avals: ReadonlyArray<aval<unknown>>) { this._avals = avals; }
+  bind<K, V>(f: (...vs: Ts) => amap<K, V>): amap<K, V> {
+    const avals = this._avals;
+    const tuple: aval<Ts> = AVal.custom((tok) => {
+      return avals.map((v) => (v as unknown as { getValue(t: AdaptiveToken): unknown }).getValue(tok)) as unknown as Ts;
+    });
+    return bind((t) => f(...t), tuple);
+  }
 }
 
-export function bind3<A, B, C, K, V>(
-  mapping: (a: A, b: B, c: C) => amap<K, V>,
-  va: aval<A>,
-  vb: aval<B>,
-  vc: aval<C>,
-): amap<K, V> {
-  const zipped: aval<[A, B, C]> = AVal.zip(va, vb, vc).map(
-    (a: A, b: B, c: C) => [a, b, c] as [A, B, C],
-  );
-  return bind<[A, B, C], K, V>(
-    ([a, b, c]) => mapping(a, b, c),
-    zipped,
-  );
+export function zip<T extends readonly aval<unknown>[]>(...vals: T): MapZipped<AValValuesMap<T>> {
+  return new MapZipped<AValValuesMap<T>>(vals);
 }
 
 export function mapA<K, V1, V2>(
@@ -1760,8 +1844,7 @@ export const AMap = {
   unionWith,
   union,
   bind,
-  bind2,
-  bind3,
+  zip,
   mapA,
   chooseA,
   filterA,

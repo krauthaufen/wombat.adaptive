@@ -21,8 +21,8 @@ describe("aset smoke", () => {
 
   test("cset basic add/remove and reader pulls deltas", () => {
     const s = cset<number>([1, 2, 3]);
-    expect(s.count).toBe(3);
-    expect(s.contains(2)).toBe(true);
+    expect(s.currentCount).toBe(3);
+    expect(s.containsNow(2)).toBe(true);
 
     const r = s.getReader();
     const t = AdaptiveToken.top;

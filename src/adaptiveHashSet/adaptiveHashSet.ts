@@ -67,6 +67,44 @@ export interface aset<T> {
   getReader(): IHashSetReader<T>;
   /** The underlying History instance for the aset (if any). */
   readonly history: History<CountingHashSet<T>, HashSetDelta<T>> | undefined;
+
+  // transforms
+  map<R>(mapping: (t: T) => R): aset<R>;
+  choose<R>(mapping: (t: T) => R | undefined): aset<R>;
+  filter(predicate: (t: T) => boolean): aset<T>;
+  collect<R>(mapping: (t: T) => aset<R>): aset<R>;
+  collectSeq<R>(mapping: (t: T) => Iterable<R>): aset<R>;
+  union(other: aset<T>): aset<T>;
+  difference(other: aset<T>): aset<T>;
+  intersect(other: aset<T>): aset<T>;
+  xor(other: aset<T>): aset<T>;
+  mapA<R>(mapping: (t: T) => aval<R>): aset<R>;
+  chooseA<R>(mapping: (t: T) => aval<R | undefined>): aset<R>;
+  filterA(predicate: (t: T) => aval<boolean>): aset<T>;
+  // queries returning aval
+  isEmpty(): aval<boolean>;
+  count(): aval<number>;
+  contains(value: T): aval<boolean>;
+  forall(predicate: (t: T) => boolean): aval<boolean>;
+  exists(predicate: (t: T) => boolean): aval<boolean>;
+  forallA(predicate: (t: T) => aval<boolean>): aval<boolean>;
+  existsA(predicate: (t: T) => aval<boolean>): aval<boolean>;
+  countBy(predicate: (t: T) => boolean): aval<number>;
+  countByA(predicate: (t: T) => aval<boolean>): aval<number>;
+  sumBy(mapping: (t: T) => number): aval<number>;
+  sumByA(mapping: (t: T) => aval<number>): aval<number>;
+  averageBy(mapping: (t: T) => number): aval<number>;
+  averageByA(mapping: (t: T) => aval<number>): aval<number>;
+  reduce<S, V>(reduction: AdaptiveReduction<T, S, V>): aval<V>;
+  reduceBy<T2, S, V>(reduction: AdaptiveReduction<T2, S, V>, mapping: (t: T) => T2): aval<V>;
+  reduceByA<B, S, V>(reduction: AdaptiveReduction<B, S, V>, mapping: (t: T) => aval<B>): aval<V>;
+  fold<S>(add: (s: S, v: T) => S, zero: S): aval<S>;
+  foldGroup<S>(add: (s: S, v: T) => S, subtract: (s: S, v: T) => S, zero: S): aval<S>;
+  foldHalfGroup<S>(add: (s: S, v: T) => S, trySubtract: (s: S, v: T) => S | undefined, zero: S): aval<S>;
+  tryMin(compare?: (a: T, b: T) => number): aval<T | undefined>;
+  tryMax(compare?: (a: T, b: T) => number): aval<T | undefined>;
+  toAVal(): aval<HashSet<T>>;
+  force(): HashSet<T>;
 }
 
 /** Convenience: pull the current content of an aset (untracked). */
@@ -74,14 +112,57 @@ export function force<T>(set: aset<T>): HashSet<T> {
   return AVal.force(set.content);
 }
 
+export abstract class AbstractAset<T> implements aset<T> {
+  abstract readonly isConstant: boolean;
+  abstract readonly content: aval<HashSet<T>>;
+  abstract readonly history: History<CountingHashSet<T>, HashSetDelta<T>> | undefined;
+  abstract getReader(): IHashSetReader<T>;
+
+  map<R>(mapping: (t: T) => R): aset<R> { return map(mapping, this); }
+  choose<R>(mapping: (t: T) => R | undefined): aset<R> { return choose(mapping, this); }
+  filter(predicate: (t: T) => boolean): aset<T> { return filter(predicate, this); }
+  collect<R>(mapping: (t: T) => aset<R>): aset<R> { return collect(mapping, this); }
+  collectSeq<R>(mapping: (t: T) => Iterable<R>): aset<R> { return collectSeq(mapping, this); }
+  union(other: aset<T>): aset<T> { return union(this, other); }
+  difference(other: aset<T>): aset<T> { return difference(this, other); }
+  intersect(other: aset<T>): aset<T> { return intersect(this, other); }
+  xor(other: aset<T>): aset<T> { return xor(this, other); }
+  mapA<R>(mapping: (t: T) => aval<R>): aset<R> { return mapA(mapping, this); }
+  chooseA<R>(mapping: (t: T) => aval<R | undefined>): aset<R> { return chooseA(mapping, this); }
+  filterA(predicate: (t: T) => aval<boolean>): aset<T> { return filterA(predicate, this); }
+  isEmpty(): aval<boolean> { return isEmpty(this); }
+  count(): aval<number> { return count(this); }
+  contains(value: T): aval<boolean> { return contains(value, this); }
+  forall(predicate: (t: T) => boolean): aval<boolean> { return forall(predicate, this); }
+  exists(predicate: (t: T) => boolean): aval<boolean> { return exists(predicate, this); }
+  forallA(predicate: (t: T) => aval<boolean>): aval<boolean> { return forallA(predicate, this); }
+  existsA(predicate: (t: T) => aval<boolean>): aval<boolean> { return existsA(predicate, this); }
+  countBy(predicate: (t: T) => boolean): aval<number> { return countBy(predicate, this); }
+  countByA(predicate: (t: T) => aval<boolean>): aval<number> { return countByA(predicate, this); }
+  sumBy(mapping: (t: T) => number): aval<number> { return sumBy(mapping, this); }
+  sumByA(mapping: (t: T) => aval<number>): aval<number> { return sumByA(mapping, this); }
+  averageBy(mapping: (t: T) => number): aval<number> { return averageBy(mapping, this); }
+  averageByA(mapping: (t: T) => aval<number>): aval<number> { return averageByA(mapping, this); }
+  reduce<S, V>(reduction: AdaptiveReduction<T, S, V>): aval<V> { return reduce(reduction, this); }
+  reduceBy<T2, S, V>(reduction: AdaptiveReduction<T2, S, V>, mapping: (t: T) => T2): aval<V> { return reduceBy(reduction, mapping, this); }
+  reduceByA<B, S, V>(reduction: AdaptiveReduction<B, S, V>, mapping: (t: T) => aval<B>): aval<V> { return reduceByA(reduction, mapping, this); }
+  fold<S>(add: (s: S, v: T) => S, zero: S): aval<S> { return fold(add, zero, this); }
+  foldGroup<S>(add: (s: S, v: T) => S, subtract: (s: S, v: T) => S, zero: S): aval<S> { return foldGroup(add, subtract, zero, this); }
+  foldHalfGroup<S>(add: (s: S, v: T) => S, trySubtract: (s: S, v: T) => S | undefined, zero: S): aval<S> { return foldHalfGroup(add, trySubtract, zero, this); }
+  tryMin(compare?: (a: T, b: T) => number): aval<T | undefined> { return tryMin(this, compare); }
+  tryMax(compare?: (a: T, b: T) => number): aval<T | undefined> { return tryMax(this, compare); }
+  toAVal(): aval<HashSet<T>> { return toAVal(this); }
+  force(): HashSet<T> { return force(this); }
+}
+
 // ---------------------------------------------------------------------------
 // Empty / Constant / impl wrappers
 // ---------------------------------------------------------------------------
 
-class EmptyAset<T> implements aset<T> {
-  readonly isConstant = true;
-  readonly content: aval<HashSet<T>> = avalConstant(HashSet.empty<T>());
-  readonly history = undefined;
+class EmptyAset<T> extends AbstractAset<T> {
+  override readonly isConstant = true;
+  override readonly content: aval<HashSet<T>> = avalConstant(HashSet.empty<T>());
+  override readonly history = undefined;
   private static _instances = new WeakMap<object, EmptyAset<unknown>>();
   static instance<T>(): aset<T> {
     // single per-runtime instance; type tag doesn't matter at runtime
@@ -89,21 +170,22 @@ class EmptyAset<T> implements aset<T> {
     return EmptyAset._cached as aset<T>;
   }
   private static _cached: EmptyAset<unknown> | null = null;
-  getReader(): IHashSetReader<T> {
+  override getReader(): IHashSetReader<T> {
     return new EmptyReader<CountingHashSet<T>, HashSetDelta<T>>(
       CountingHashSet.trace<T>(),
     );
   }
 }
 
-class ConstantAset<T> implements aset<T> {
-  readonly isConstant = true;
+class ConstantAset<T> extends AbstractAset<T> {
+  override readonly isConstant = true;
   private readonly _create: () => HashSet<T>;
   private _cachedSet: HashSet<T> | null = null;
-  readonly content: aval<HashSet<T>>;
-  readonly history = undefined;
+  override readonly content: aval<HashSet<T>>;
+  override readonly history = undefined;
 
   constructor(create: () => HashSet<T>) {
+    super();
     this._create = create;
     this.content = avalDelay(() => this.lazySet());
   }
@@ -113,7 +195,7 @@ class ConstantAset<T> implements aset<T> {
     return this._cachedSet;
   }
 
-  getReader(): IHashSetReader<T> {
+  override getReader(): IHashSetReader<T> {
     return new ConstantReader<CountingHashSet<T>, HashSetDelta<T>>(
       CountingHashSet.trace<T>(),
       () => HashSet.ofArray(this.lazySet().toArray()).fold((d, k) => d.add(SetOperation.add(k)), HashSetDelta.empty<T>()),
@@ -122,12 +204,13 @@ class ConstantAset<T> implements aset<T> {
   }
 }
 
-class AdaptiveHashSetImpl<T> implements aset<T> {
-  readonly isConstant = false;
-  readonly history: History<CountingHashSet<T>, HashSetDelta<T>>;
-  readonly content: aval<HashSet<T>>;
+class AdaptiveHashSetImpl<T> extends AbstractAset<T> {
+  override readonly isConstant = false;
+  override readonly history: History<CountingHashSet<T>, HashSetDelta<T>>;
+  override readonly content: aval<HashSet<T>>;
 
   constructor(createReader: () => IOpReaderWithState<unknown, HashSetDelta<T>>) {
+    super();
     this.history = History.ofReader<CountingHashSet<T>, HashSetDelta<T>>(
       CountingHashSet.trace<T>(),
       () => createReader() as unknown as IOpReaderWithState<CountingHashSet<T>, HashSetDelta<T>>,
@@ -138,7 +221,7 @@ class AdaptiveHashSetImpl<T> implements aset<T> {
     });
   }
 
-  getReader(): IHashSetReader<T> {
+  override getReader(): IHashSetReader<T> {
     return this.history.newReader();
   }
 }
@@ -1619,6 +1702,30 @@ export function tryMax<T>(
 }
 
 // ---------------------------------------------------------------------------
+// N-ary combinators — `zip` wrapper
+// ---------------------------------------------------------------------------
+
+type AValValuesSet<T extends ReadonlyArray<aval<unknown>>> = {
+  [K in keyof T]: T[K] extends aval<infer U> ? U : never;
+};
+
+export class SetZipped<Ts extends readonly unknown[]> {
+  private readonly _avals: ReadonlyArray<aval<unknown>>;
+  constructor(avals: ReadonlyArray<aval<unknown>>) { this._avals = avals; }
+  bind<R>(f: (...vs: Ts) => aset<R>): aset<R> {
+    const avals = this._avals;
+    const tuple: aval<Ts> = AVal.custom((tok) => {
+      return avals.map((v) => (v as unknown as { getValue(t: AdaptiveToken): unknown }).getValue(tok)) as unknown as Ts;
+    });
+    return bind((t) => f(...t), tuple);
+  }
+}
+
+export function zip<T extends readonly aval<unknown>[]>(...vals: T): SetZipped<AValValuesSet<T>> {
+  return new SetZipped<AValValuesSet<T>>(vals);
+}
+
+// ---------------------------------------------------------------------------
 // Convenience namespace
 // ---------------------------------------------------------------------------
 
@@ -1674,4 +1781,5 @@ export const ASet = {
   tryMin,
   tryMax,
   force,
+  zip,
 };

@@ -18,7 +18,7 @@ describe("alist smoke", () => {
 
   test("clist add/remove/perform", () => {
     const l = clist<number>([10, 20, 30]);
-    expect(l.count).toBe(3);
+    expect(l.currentCount).toBe(3);
     expect([...l]).toEqual([10, 20, 30]);
 
     const r = l.getReader();

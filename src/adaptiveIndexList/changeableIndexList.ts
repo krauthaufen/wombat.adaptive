@@ -17,18 +17,19 @@ import {
 } from "../datastructures/operations.js";
 import { indexListTrace } from "../traceable/indexListTraceable.js";
 import { History } from "../traceable/history.js";
-import type { alist, IIndexListReader } from "./adaptiveIndexList.js";
+import { AbstractAlist, type IIndexListReader } from "./adaptiveIndexList.js";
 
 /**
  * Changeable adaptive list that allows mutation by user-code and
  * implements `alist`.
  */
-export class ChangeableIndexList<T> implements alist<T>, Iterable<T> {
-  readonly isConstant = false;
-  readonly history: History<IndexList<T>, IndexListDelta<T>>;
-  readonly content: aval<IndexList<T>>;
+export class ChangeableIndexList<T> extends AbstractAlist<T> implements Iterable<T> {
+  override readonly isConstant = false;
+  override readonly history: History<IndexList<T>, IndexListDelta<T>>;
+  override readonly content: aval<IndexList<T>>;
 
   constructor(initial?: IndexList<T> | Iterable<T>) {
+    super();
     const init =
       initial === undefined
         ? IndexList.empty<T>()
@@ -52,10 +53,12 @@ export class ChangeableIndexList<T> implements alist<T>, Iterable<T> {
   // Queries
   // -------------------------------------------------------------------------
 
-  get count(): number {
+  /** Synchronous (untracked) entry count. */
+  get currentCount(): number {
     return this.history.state.count;
   }
-  get isEmpty(): boolean {
+  /** Synchronous (untracked) emptiness check. */
+  get currentIsEmpty(): boolean {
     return this.history.state.isEmpty;
   }
   get minIndex(): Index {
@@ -73,10 +76,12 @@ export class ChangeableIndexList<T> implements alist<T>, Iterable<T> {
     this.updateTo(v);
   }
 
-  tryGet(index: Index): T | undefined {
+  /** Synchronous (untracked) lookup by Index. */
+  tryGetNow(index: Index): T | undefined {
     return this.history.state.tryGetByIndex(index);
   }
-  tryAt(pos: number): T | undefined {
+  /** Synchronous (untracked) lookup by position. */
+  tryAtNow(pos: number): T | undefined {
     return this.history.state.tryGetByPosition(pos);
   }
   tryGetIndex(pos: number): Index | undefined {
@@ -86,14 +91,14 @@ export class ChangeableIndexList<T> implements alist<T>, Iterable<T> {
 
   /** Indexed access by position. */
   itemAt(pos: number): T {
-    const v = this.tryAt(pos);
+    const v = this.tryAtNow(pos);
     if (v === undefined) throw new Error(`Index out of range: ${pos}`);
     return v;
   }
 
   /** Indexed access by Index key. */
   get(index: Index): T {
-    const v = this.tryGet(index);
+    const v = this.tryGetNow(index);
     if (v === undefined)
       throw new Error(`Index not present: ${index.toString()}`);
     return v;
@@ -114,11 +119,6 @@ export class ChangeableIndexList<T> implements alist<T>, Iterable<T> {
     const newIndex = newList.maxIndex;
     this.history.perform(IndexListDelta.empty<T>().add(newIndex, ElementSet(element)));
     return newIndex;
-  }
-
-  /** Alias for `add`. */
-  append(element: T): Index {
-    return this.add(element);
   }
 
   addRange(elements: Iterable<T>): void {
@@ -220,7 +220,7 @@ export class ChangeableIndexList<T> implements alist<T>, Iterable<T> {
     return this.updateTo(IndexList.ofArray(values));
   }
 
-  getReader(): IIndexListReader<T> {
+  override getReader(): IIndexListReader<T> {
     return this.history.newReader();
   }
 
@@ -228,8 +228,8 @@ export class ChangeableIndexList<T> implements alist<T>, Iterable<T> {
     yield* this.history.state;
   }
 
-  toString(): string {
-    return `clist [${[...this.history.state.toListIndexed().slice(0, 5).map(([_, v]) => String(v))].join("; ")}${this.count > 5 ? "; ..." : ""}]`;
+  override toString(): string {
+    return `clist [${[...this.history.state.toListIndexed().slice(0, 5).map(([_, v]) => String(v))].join("; ")}${this.currentCount > 5 ? "; ..." : ""}]`;
   }
 }
 
