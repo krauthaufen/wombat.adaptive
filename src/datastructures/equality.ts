@@ -65,10 +65,21 @@ interface CustomEquatable {
   getHashCode(): number;
 }
 
-function hasCustomEquality(o: object): o is CustomEquatable {
-  const eq = (o as { equals?: unknown }).equals;
-  const gh = (o as { getHashCode?: unknown }).getHashCode;
-  return typeof eq === "function" && typeof gh === "function";
+// Accepts the camelCase convention used by wombat.* TS types AND the
+// PascalCase Equals/GetHashCode that Fable emits for F# types with
+// structural equality. Returns a {equals, getHashCode} view in either
+// case so the rest of the file can stay convention-agnostic.
+function customEquality(o: object): CustomEquatable | null {
+  const r = o as Record<string, unknown>;
+  const eq = r.equals ?? r.Equals;
+  const gh = r.getHashCode ?? r.GetHashCode;
+  if (typeof eq === "function" && typeof gh === "function") {
+    return {
+      equals: (other) => (eq as (this: object, x: unknown) => boolean).call(o, other),
+      getHashCode: () => (gh as (this: object) => number).call(o),
+    };
+  }
+  return null;
 }
 
 export function defaultHash(k: unknown): number {
@@ -86,7 +97,8 @@ export function defaultHash(k: unknown): number {
       return hashString(k.toString());
     default: {
       const o = k as object;
-      if (hasCustomEquality(o)) return o.getHashCode() | 0;
+      const ce = customEquality(o);
+      if (ce !== null) return ce.getHashCode() | 0;
       return hashObjectIdentity(o);
     }
   }
@@ -98,11 +110,11 @@ export function defaultEquals<K>(a: K, b: K): boolean {
     a !== null &&
     b !== null &&
     typeof a === "object" &&
-    typeof b === "object" &&
-    hasCustomEquality(a as object) &&
-    hasCustomEquality(b as object)
+    typeof b === "object"
   ) {
-    return (a as unknown as CustomEquatable).equals(b);
+    const ca = customEquality(a as object);
+    const cb = customEquality(b as object);
+    if (ca !== null && cb !== null) return ca.equals(b);
   }
   return false;
 }

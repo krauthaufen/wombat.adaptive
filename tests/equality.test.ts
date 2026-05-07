@@ -59,6 +59,36 @@ describe("equality convention", () => {
     expect(m.tryFind(new Pair(2, 1))).toBe(undefined);
   });
 
+  test("Fable-style PascalCase Equals/GetHashCode is also accepted", () => {
+    // Fable lowers F# structural equality to PascalCase methods.
+    class FablePair {
+      constructor(
+        readonly a: number,
+        readonly b: number,
+      ) {}
+      Equals(other: unknown): boolean {
+        return (
+          other instanceof FablePair && other.a === this.a && other.b === this.b
+        );
+      }
+      GetHashCode(): number {
+        return ((this.a | 0) * 31 + (this.b | 0)) | 0;
+      }
+    }
+    const p1 = new FablePair(1, 2);
+    const p2 = new FablePair(1, 2);
+    const p3 = new FablePair(3, 4);
+    expect(defaultEquals(p1, p2)).toBe(true);
+    expect(defaultEquals(p1, p3)).toBe(false);
+    expect(defaultHash(p1)).toBe(defaultHash(p2));
+
+    const s = HashSet.empty<FablePair>()
+      .add(new FablePair(1, 2))
+      .add(new FablePair(1, 2));
+    expect(s.count).toBe(1);
+    expect(s.contains(new FablePair(1, 2))).toBe(true);
+  });
+
   test("primitives and null/undefined", () => {
     expect(defaultEquals(1, 1)).toBe(true);
     expect(defaultEquals("a", "a")).toBe(true);
