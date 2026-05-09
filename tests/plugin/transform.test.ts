@@ -205,6 +205,56 @@ describe("plugin: transformAdaptiveMemo", () => {
     );
   });
 
+  test("body hash is normalized via printer (whitespace-insensitive)", () => {
+    // Fix 4: identical AST → identical hash, regardless of source
+    // formatting. `t=>t*2` and `t   =>   t * 2` and even multiline
+    // formats produce the same body-hash.
+    const compact = `
+      import { cval } from "@aardworx/wombat.adaptive/aval";
+      const a = cval(1);
+      const m = a.map(t=>t*2);
+    `;
+    const spaced = `
+      import { cval } from "@aardworx/wombat.adaptive/aval";
+      const a = cval(1);
+      const m = a.map(  t   =>   t   *   2  );
+    `;
+    const multiline = `
+      import { cval } from "@aardworx/wombat.adaptive/aval";
+      const a = cval(1);
+      const m = a.map(
+        t =>
+          t * 2
+      );
+    `;
+    const r1 = run(compact);
+    const r2 = run(spaced);
+    const r3 = run(multiline);
+    const h1 = r1.code.match(/"h:([0-9a-f]{8})"/)![1];
+    const h2 = r2.code.match(/"h:([0-9a-f]{8})"/)![1];
+    const h3 = r3.code.match(/"h:([0-9a-f]{8})"/)![1];
+    expect(h2).toBe(h1);
+    expect(h3).toBe(h1);
+  });
+
+  test("body hash strips comments", () => {
+    // Comments inside the lambda body shouldn't perturb the hash —
+    // the printer's `removeComments: true` setting drops them.
+    const withComment = `
+      import { cval } from "@aardworx/wombat.adaptive/aval";
+      const a = cval(1);
+      const m = a.map(t => /* doubled */ t * 2);
+    `;
+    const without = `
+      import { cval } from "@aardworx/wombat.adaptive/aval";
+      const a = cval(1);
+      const m = a.map(t => t * 2);
+    `;
+    const h1 = run(withComment).code.match(/"h:([0-9a-f]{8})"/)![1];
+    const h2 = run(without).code.match(/"h:([0-9a-f]{8})"/)![1];
+    expect(h1).toBe(h2);
+  });
+
   test("identical lambda bodies produce identical hashes", () => {
     const src = `
       import { cval } from "@aardworx/wombat.adaptive/aval";
@@ -288,6 +338,111 @@ describe("plugin: transformAdaptiveMemo", () => {
     const r = run(src);
     expect(r.tags).toContain("TAG_AMAP_MAP");
     expect(r.tags).toContain("TAG_AMAP_FILTER");
+  });
+
+  test("CallExpression receiver: cval(1).map(...) is rewritten", () => {
+    const src = `
+      import { cval } from "@aardworx/wombat.adaptive/aval";
+      const m = cval(1).map(t => t * 2);
+    `;
+    const r = run(src);
+    expect(r.rewrites).toBe(1);
+    expect(r.tags).toEqual(["TAG_AVAL_MAP"]);
+  });
+
+  test("CallExpression receiver chained on free-fn: map(av, t).map(...)", () => {
+    const src = `
+      import { cval, map } from "@aardworx/wombat.adaptive/aval";
+      const av = cval(1);
+      const m = map(av, t => t).map(t => t * 2);
+    `;
+    const r = run(src);
+    // outer .map and inner free-form map both rewrite.
+    expect(r.rewrites).toBe(2);
+    expect(r.tags).toEqual(["TAG_AVAL_MAP"]);
+  });
+
+  test("namespace import * as ASet: ASet.map(fn, src)", () => {
+    const src = `
+      import * as ASet from "@aardworx/wombat.adaptive/aset";
+      const s = ASet.empty<number>();
+      const m = ASet.map(x => x * 2, s);
+    `;
+    const r = run(src);
+    expect(r.rewrites).toBe(1);
+    expect(r.tags).toEqual(["TAG_ASET_MAP"]);
+  });
+
+  test("namespace import * as AVal: AVal.map(av, fn)", () => {
+    const src = `
+      import * as AVal from "@aardworx/wombat.adaptive/aval";
+      const av = AVal.constant(1);
+      const m = AVal.map(av, t => t * 2);
+    `;
+    const r = run(src);
+    expect(r.rewrites).toBe(1);
+    expect(r.tags).toEqual(["TAG_AVAL_MAP"]);
+  });
+
+  test("compound bare namespace: import * as W; W.AVal.map(...)", () => {
+    const src = `
+      import * as W from "@aardworx/wombat.adaptive";
+      const av = W.AVal.constant(1);
+      const m = W.AVal.map(av, t => t * 2);
+    `;
+    const r = run(src);
+    expect(r.rewrites).toBe(1);
+    expect(r.tags).toEqual(["TAG_AVAL_MAP"]);
+  });
+
+  test("aset.mapA / chooseA / filterA", () => {
+    const src = `
+      import { cset } from "@aardworx/wombat.adaptive/aset";
+      import { cval } from "@aardworx/wombat.adaptive/aval";
+      const s = cset<number>();
+      const av = cval(2);
+      const a = s.mapA(x => av);
+      const b = s.chooseA(x => av);
+      const c = s.filterA(x => av);
+    `;
+    const r = run(src);
+    expect(r.tags).toEqual(["TAG_ASET_CHOOSEA", "TAG_ASET_FILTERA", "TAG_ASET_MAPA"]);
+  });
+
+  test("alist indexed and aval-callback variants", () => {
+    const src = `
+      import { clist } from "@aardworx/wombat.adaptive/alist";
+      import { cval } from "@aardworx/wombat.adaptive/aval";
+      const l = clist<number>();
+      const av = cval(2);
+      const a = l.mapi((i, x) => x + 1);
+      const b = l.filteri((i, x) => x > 0);
+      const c = l.choosei((i, x) => undefined);
+      const d = l.collecti((i, x) => l);
+      const e = l.mapA(x => av);
+      const f = l.mapAi((i, x) => av);
+    `;
+    const r = run(src);
+    expect(r.tags).toContain("TAG_ALIST_MAPI");
+    expect(r.tags).toContain("TAG_ALIST_FILTERI");
+    expect(r.tags).toContain("TAG_ALIST_CHOOSEI");
+    expect(r.tags).toContain("TAG_ALIST_COLLECTI");
+    expect(r.tags).toContain("TAG_ALIST_MAPA");
+    expect(r.tags).toContain("TAG_ALIST_MAPAI");
+  });
+
+  test("amap.mapA / chooseA / filterA", () => {
+    const src = `
+      import { cmap } from "@aardworx/wombat.adaptive/amap";
+      import { cval } from "@aardworx/wombat.adaptive/aval";
+      const m = cmap<string, number>();
+      const av = cval(2);
+      const a = m.mapA((k, v) => av);
+      const b = m.filterA((k, v) => av);
+      const c = m.chooseA((k, v) => av);
+    `;
+    const r = run(src);
+    expect(r.tags).toEqual(["TAG_AMAP_CHOOSEA", "TAG_AMAP_FILTERA", "TAG_AMAP_MAPA"]);
   });
 
   test("idempotence: re-running on transformed code is a no-op for non-targets", () => {

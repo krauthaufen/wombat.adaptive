@@ -108,6 +108,73 @@ function internHashable(v: Hashable): object {
   return key;
 }
 
+// Plain-object / plain-array closure deps with primitive leaves.
+// Two structurally-equal `{r:1, g:0, b:0}` literals captured at
+// distinct call sites get distinct references in JS, so without
+// interning each becomes a separate cache-trie key. We dedupe
+// "simple" containers (own enumerable keys only, prototype is
+// Object.prototype or Array.prototype, depth-bounded, no circular
+// refs, no functions/symbols/typed-arrays) by serializing to a
+// deterministic string and interning via a module-level Map.
+//
+// Anything outside this profile (class instances without
+// getHashCode/equals, Maps, Sets, typed arrays, exotic objects)
+// falls through to reference identity — the safe default.
+const SIMPLE_INTERN = new Map<string, object>();
+const MAX_SIMPLE_DEPTH = 4;
+
+function isPlainContainer(o: object): boolean {
+  if (Array.isArray(o)) return true;
+  const p = Object.getPrototypeOf(o);
+  return p === Object.prototype || p === null;
+}
+
+function trySerializeSimple(v: unknown, depth: number): string | null {
+  if (depth > MAX_SIMPLE_DEPTH) return null;
+  if (v === null) return "z;";
+  switch (typeof v) {
+    case "string":  return `s${(v as string).length}:${v as string}`;
+    case "number":  return `n:${String(v)};`;
+    case "boolean": return v ? "t;" : "f;";
+    case "bigint":  return `bi:${(v as bigint).toString()};`;
+    case "undefined": return "u;";
+    case "symbol":  return null;     // non-comparable
+    case "function": return null;
+  }
+  if (typeof v !== "object") return null;
+  const obj = v as object;
+  if (!isPlainContainer(obj)) return null;
+  if (Array.isArray(obj)) {
+    let out = `[${obj.length}|`;
+    for (let i = 0; i < obj.length; i++) {
+      const part = trySerializeSimple(obj[i], depth + 1);
+      if (part === null) return null;
+      out += part;
+    }
+    return out + "]";
+  }
+  // Plain object: sort keys for deterministic output.
+  const keys = Object.keys(obj).sort();
+  let out = `{${keys.length}|`;
+  for (const k of keys) {
+    const part = trySerializeSimple((obj as Record<string, unknown>)[k], depth + 1);
+    if (part === null) return null;
+    out += `k${k.length}:${k}=${part}`;
+  }
+  return out + "}";
+}
+
+function internSimple(o: object): object | null {
+  const ser = trySerializeSimple(o, 0);
+  if (ser === null) return null;
+  let handle = SIMPLE_INTERN.get(ser);
+  if (handle === undefined) {
+    handle = Object.freeze({});
+    SIMPLE_INTERN.set(ser, handle);
+  }
+  return handle;
+}
+
 /**
  * Plugin-facing `__memo` wrapper. Accepts a key path that may mix
  * objects and primitives. Object entries go straight into the
@@ -120,20 +187,53 @@ export function __memo<T extends object>(
   keys: ReadonlyArray<unknown>,
   compute: () => T,
 ): T {
+  // Skip the trie entirely when every aval-typed input is constant.
+  // The combinator's output is itself constant — caching it would only
+  // serve identity-sharing for downstream consumers, but constants
+  // never mark, and the dedup that actually matters (large payloads
+  // through pools) lives at the consumer. The 95% case for memoization
+  // is reactive avals, which still flow through the trie below.
+  let avalCount = 0;
+  let constCount = 0;
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    if (
+      k !== null &&
+      typeof k === "object" &&
+      "isConstant" in (k as object) &&
+      typeof (k as { isConstant: unknown }).isConstant === "boolean"
+    ) {
+      avalCount++;
+      if ((k as { isConstant: boolean }).isConstant) constCount++;
+    }
+  }
+  if (avalCount > 0 && avalCount === constCount) {
+    return compute();
+  }
+
   const objKeys: object[] = [];
   let primParts = "";
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i];
     if (k !== null && (typeof k === "object" || typeof k === "function")) {
-      // Hashable types (V3f / M44f / etc.) fold their structural hash
-      // into the combined key — value semantics rather than reference.
-      // Plain objects keep going through the WeakMap path with their
-      // reference identity.
+      // Three classes of object-typed keys:
+      //   1. Aardvark value-types (V3f / M44f / ...): hash-bucket +
+      //      equals-based interning so distinct instances with equal
+      //      data dedup correctly even on hashCode collision.
+      //   2. "Simple" plain objects / arrays (own enumerable keys only,
+      //      primitive leaves, depth-bounded): serialize structurally
+      //      and intern via a module-level Map. Two `{r:1,g:0,b:0}`
+      //      literals captured at distinct call sites collapse to one
+      //      cache key.
+      //   3. Everything else (class instances, functions, exotic
+      //      objects): fall through to reference identity. Safe
+      //      default — the cache may have more entries than ideal but
+      //      never returns a wrong result.
       if (isHashable(k as object)) {
-        // Intern by structural value (hash-bucket + equals). Distinct
-        // values always get distinct handles, regardless of hashCode
-        // collisions. The handle is an ordinary object key in the trie.
         objKeys.push(internHashable(k as Hashable));
+      } else if (typeof k === "object") {
+        const handle = internSimple(k as object);
+        objKeys.push(handle ?? (k as object));
       } else {
         objKeys.push(k as object);
       }
@@ -156,14 +256,30 @@ export const TAG_ASET_BIND = Object.freeze({ tag: "aset.bind" });
 export const TAG_ASET_FILTER = Object.freeze({ tag: "aset.filter" });
 export const TAG_ASET_COLLECT = Object.freeze({ tag: "aset.collect" });
 export const TAG_ASET_CHOOSE = Object.freeze({ tag: "aset.choose" });
+export const TAG_ASET_MAPA = Object.freeze({ tag: "aset.mapA" });
+export const TAG_ASET_FILTERA = Object.freeze({ tag: "aset.filterA" });
+export const TAG_ASET_CHOOSEA = Object.freeze({ tag: "aset.chooseA" });
 
 export const TAG_ALIST_MAP = Object.freeze({ tag: "alist.map" });
 export const TAG_ALIST_BIND = Object.freeze({ tag: "alist.bind" });
 export const TAG_ALIST_FILTER = Object.freeze({ tag: "alist.filter" });
 export const TAG_ALIST_COLLECT = Object.freeze({ tag: "alist.collect" });
 export const TAG_ALIST_CHOOSE = Object.freeze({ tag: "alist.choose" });
+export const TAG_ALIST_MAPI = Object.freeze({ tag: "alist.mapi" });
+export const TAG_ALIST_FILTERI = Object.freeze({ tag: "alist.filteri" });
+export const TAG_ALIST_CHOOSEI = Object.freeze({ tag: "alist.choosei" });
+export const TAG_ALIST_COLLECTI = Object.freeze({ tag: "alist.collecti" });
+export const TAG_ALIST_MAPA = Object.freeze({ tag: "alist.mapA" });
+export const TAG_ALIST_FILTERA = Object.freeze({ tag: "alist.filterA" });
+export const TAG_ALIST_CHOOSEA = Object.freeze({ tag: "alist.chooseA" });
+export const TAG_ALIST_MAPAI = Object.freeze({ tag: "alist.mapAi" });
+export const TAG_ALIST_FILTERAI = Object.freeze({ tag: "alist.filterAi" });
+export const TAG_ALIST_CHOOSEAI = Object.freeze({ tag: "alist.chooseAi" });
 
 export const TAG_AMAP_MAP = Object.freeze({ tag: "amap.map" });
 export const TAG_AMAP_BIND = Object.freeze({ tag: "amap.bind" });
 export const TAG_AMAP_FILTER = Object.freeze({ tag: "amap.filter" });
 export const TAG_AMAP_CHOOSE = Object.freeze({ tag: "amap.choose" });
+export const TAG_AMAP_MAPA = Object.freeze({ tag: "amap.mapA" });
+export const TAG_AMAP_FILTERA = Object.freeze({ tag: "amap.filterA" });
+export const TAG_AMAP_CHOOSEA = Object.freeze({ tag: "amap.chooseA" });

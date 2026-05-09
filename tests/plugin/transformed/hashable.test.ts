@@ -60,13 +60,59 @@ describe("[plugin/behavioural] hashable closure deps", () => {
     expect(mapWith(a)).not.toBe(mapWith(b));
   });
 
-  test("plain objects (no getHashCode/equals) fall through to reference identity", () => {
+  test("plain objects with primitive leaves intern by structure", () => {
     const a: PlainV3 = { x: 1, y: 2, z: 3 };
     const b: PlainV3 = { x: 1, y: 2, z: 3 };
     expect(a).not.toBe(b);
-    // Same shape and data, but no hashable protocol → reference
-    // identity, distinct cache entries.
+    // §5d Fix 5: simple plain objects (own enumerable keys, primitive
+    // leaves, depth-bounded) intern via the runtime's SIMPLE_INTERN
+    // map. Two structurally-equal `{x,y,z}` literals captured at
+    // distinct call sites collapse to one cache entry.
+    expect(mapWithPlain(a)).toBe(mapWithPlain(b));
+  });
+
+  test("plain objects with different data → distinct cache entries", () => {
+    const a: PlainV3 = { x: 1, y: 2, z: 3 };
+    const b: PlainV3 = { x: 4, y: 5, z: 6 };
     expect(mapWithPlain(a)).not.toBe(mapWithPlain(b));
+  });
+
+  test("plain arrays of primitives intern by structure", () => {
+    function mapWithArr(arr: readonly number[]) {
+      return av.map((t) => t + arr[0]! + arr[1]!);
+    }
+    const a = [10, 20];
+    const b = [10, 20];
+    expect(a).not.toBe(b);
+    expect(mapWithArr(a)).toBe(mapWithArr(b));
+
+    const c = [10, 21];
+    expect(mapWithArr(a)).not.toBe(mapWithArr(c));
+  });
+
+  test("nested simple containers intern by structure (within depth limit)", () => {
+    function mapWithCfg(cfg: { axis: { x: number; y: number } }) {
+      return av.map((t) => t + cfg.axis.x);
+    }
+    const a = { axis: { x: 1, y: 2 } };
+    const b = { axis: { x: 1, y: 2 } };
+    expect(mapWithCfg(a)).toBe(mapWithCfg(b));
+  });
+
+  test("class instance without getHashCode/equals falls through to reference identity", () => {
+    class Bag {
+      constructor(public n: number) {}
+    }
+    function mapWithBag(bag: Bag) {
+      return av.map((t) => t + bag.n);
+    }
+    const a = new Bag(5);
+    const b = new Bag(5);
+    // Bag has its own prototype (not Object.prototype) — not "simple",
+    // not Hashable. Reference identity rules; distinct cache entries.
+    expect(mapWithBag(a)).not.toBe(mapWithBag(b));
+    // Same instance reused → trivially shared.
+    expect(mapWithBag(a)).toBe(mapWithBag(a));
   });
 
   test("same V3 instance reused → trivially shared", () => {

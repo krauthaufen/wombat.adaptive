@@ -13,7 +13,12 @@
 
 import { describe, expect, test } from "vitest";
 import { transact } from "@aardworx/wombat.adaptive";
-import { cval, force } from "@aardworx/wombat.adaptive/aval";
+import { cval, constant, force } from "@aardworx/wombat.adaptive/aval";
+import {
+  cset,
+  constant as setConstant,
+} from "@aardworx/wombat.adaptive/aset";
+import { HashSet } from "@aardworx/wombat.adaptive";
 import { double, isPositive, negate } from "./fixtures.js";
 
 describe("[plugin/behavioural] aval.map memoization", () => {
@@ -116,7 +121,9 @@ describe("[plugin/behavioural] aval.map closure-deps", () => {
     // Plugin emits the base identifier as the dep (conservative —
     // re-binding `params` will invalidate even if the relevant field
     // didn't change). Behavioural check: same params object → same
-    // derived; different params object → different derived.
+    // derived; structurally-equal params object → also same derived
+    // (Fix 5: SIMPLE_INTERN dedups simple plain objects); different
+    // data → different derived.
     const av = cval(1);
     function build(params: { scale: number }) {
       return av.map((t) => t * params.scale);
@@ -126,8 +133,14 @@ describe("[plugin/behavioural] aval.map closure-deps", () => {
     const m2 = build(p);
     expect(m1).toBe(m2);
 
+    // Fix 5: structurally equal `{scale: 4}` from a fresh literal
+    // interns to the same opaque handle as `p`, so cache hit.
     const m3 = build({ scale: 4 });
-    expect(m1).not.toBe(m3);
+    expect(m1).toBe(m3);
+
+    // Different data → distinct entry.
+    const m4 = build({ scale: 7 });
+    expect(m1).not.toBe(m4);
   });
 });
 
@@ -191,5 +204,54 @@ describe("[plugin/behavioural] correctness", () => {
       av.value = 5;
     });
     expect(force(m)).toBe(true);
+  });
+});
+
+describe("[plugin/behavioural] constant-source bypass", () => {
+  // When every aval input to a combinator is `isConstant`, __memo
+  // skips the trie and runs the callback directly. The result is
+  // semantically constant; identity-sharing across call sites is
+  // not the memo trie's job for this case (downstream consumers
+  // dedup at the pool layer when they care).
+  test("two constant sources with identical value → distinct derived avals", () => {
+    const a = constant(7);
+    const b = constant(7);
+    const m1 = a.map(double);
+    const m2 = b.map(double);
+    expect(m1).not.toBe(m2);
+    expect(force(m1)).toBe(14);
+    expect(force(m2)).toBe(14);
+  });
+
+  test("same constant source twice → still distinct derived (bypassed)", () => {
+    const a = constant(7);
+    const m1 = a.map(double);
+    const m2 = a.map(double);
+    expect(m1).not.toBe(m2);
+  });
+
+  test("reactive source still memoizes (bypass only triggers when ALL aval inputs are constant)", () => {
+    const av = cval(1);
+    const m1 = av.map(double);
+    const m2 = av.map(double);
+    expect(m1).toBe(m2);
+  });
+
+  // Same bypass policy applies to aset/alist/amap — `isConstant`
+  // is duck-typed in __memo so all four collection kinds are
+  // covered uniformly.
+  test("constant aset → bypass: distinct derived sets", () => {
+    const s1 = setConstant<number>(() => HashSet.ofArray([1, 2, 3]));
+    const s2 = setConstant<number>(() => HashSet.ofArray([1, 2, 3]));
+    const m1 = s1.map(double);
+    const m2 = s2.map(double);
+    expect(m1).not.toBe(m2);
+  });
+
+  test("reactive aset still memoizes", () => {
+    const s = cset<number>([1, 2, 3]);
+    const m1 = s.map(double);
+    const m2 = s.map(double);
+    expect(m1).toBe(m2);
   });
 });

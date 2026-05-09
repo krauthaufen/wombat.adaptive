@@ -68,6 +68,9 @@ const COMBINATORS: Record<Kind, Record<string, ComboEntry>> = {
     filter: { tag: "TAG_ASET_FILTER" },
     collect: { tag: "TAG_ASET_COLLECT" },
     choose: { tag: "TAG_ASET_CHOOSE" },
+    mapA: { tag: "TAG_ASET_MAPA" },
+    filterA: { tag: "TAG_ASET_FILTERA" },
+    chooseA: { tag: "TAG_ASET_CHOOSEA" },
   },
   alist: {
     map: { tag: "TAG_ALIST_MAP" },
@@ -75,12 +78,25 @@ const COMBINATORS: Record<Kind, Record<string, ComboEntry>> = {
     filter: { tag: "TAG_ALIST_FILTER" },
     collect: { tag: "TAG_ALIST_COLLECT" },
     choose: { tag: "TAG_ALIST_CHOOSE" },
+    mapi: { tag: "TAG_ALIST_MAPI" },
+    filteri: { tag: "TAG_ALIST_FILTERI" },
+    choosei: { tag: "TAG_ALIST_CHOOSEI" },
+    collecti: { tag: "TAG_ALIST_COLLECTI" },
+    mapA: { tag: "TAG_ALIST_MAPA" },
+    filterA: { tag: "TAG_ALIST_FILTERA" },
+    chooseA: { tag: "TAG_ALIST_CHOOSEA" },
+    mapAi: { tag: "TAG_ALIST_MAPAI" },
+    filterAi: { tag: "TAG_ALIST_FILTERAI" },
+    chooseAi: { tag: "TAG_ALIST_CHOOSEAI" },
   },
   amap: {
     map: { tag: "TAG_AMAP_MAP" },
     bind: { tag: "TAG_AMAP_BIND" },
     filter: { tag: "TAG_AMAP_FILTER" },
     choose: { tag: "TAG_AMAP_CHOOSE" },
+    mapA: { tag: "TAG_AMAP_MAPA" },
+    filterA: { tag: "TAG_AMAP_FILTERA" },
+    chooseA: { tag: "TAG_AMAP_CHOOSEA" },
   },
 };
 
@@ -240,6 +256,13 @@ function hasAnyCombinatorToken(code: string): boolean {
 interface FileContext {
   /** Identifier name → kind of namespace it is (e.g. local `AVal` alias). */
   readonly namespaces: Map<string, Kind>;
+  /**
+   * Identifiers bound to `import * as X from "@aardworx/wombat.adaptive"`
+   * (the bare entry, no subpath). `X` re-exports `AVal` / `ASet` / ...
+   * as nested namespace objects, so `X.AVal.map(...)` resolves to kind
+   * aval via the `NAMESPACE_TO_KIND` table.
+   */
+  readonly compoundNamespaces: Set<string>;
   /** Identifier name → kind for constructors imported from adaptive (`cval`). */
   readonly constructors: Map<string, Kind>;
   /** Identifier name → kind for `map`/`bind`/etc. imported as a free fn. */
@@ -251,6 +274,7 @@ interface FileContext {
 function collectImports(sf: ts.SourceFile): FileContext {
   const ctx: FileContext = {
     namespaces: new Map(),
+    compoundNamespaces: new Set(),
     constructors: new Map(),
     freeFns: new Map(),
     locals: new Map(),
@@ -287,9 +311,19 @@ function collectImports(sf: ts.SourceFile): FileContext {
         }
       }
     }
-    // Namespace import (`import * as X from "..."`)
+    // Namespace import (`import * as X from "..."`).
+    // - Subpath module (e.g. ".../aset") → X is a single-kind namespace,
+    //   `X.map(fn, src)` is treated identically to `ASet.map(...)`.
+    // - Bare module (e.g. "@aardworx/wombat.adaptive") → X exposes
+    //   sub-namespaces (`X.AVal`, `X.ASet`, ...). Recorded so
+    //   `X.AVal.map(...)` resolves later.
     if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
-      // We can't know which kind without further work — skip.
+      const local = clause.namedBindings.name.text;
+      if (moduleKind) {
+        ctx.namespaces.set(local, moduleKind);
+      } else if (/^@aardworx\/wombat\.adaptive$/.test(moduleSpec)) {
+        ctx.compoundNamespaces.add(local);
+      }
     }
   }
 
@@ -314,6 +348,28 @@ function collectLocalBindings(sf: ts.SourceFile, ctx: FileContext): void {
   visit(sf);
 }
 
+/**
+ * Resolve `X` or `X.AVal` as a namespace identifier referring to a
+ * known kind. Handles bare-identifier (`X` is a subpath-imported
+ * namespace) and PropertyAccess (`X.AVal` where X is a bare adaptive
+ * namespace import + AVal is a sub-namespace name).
+ */
+function namespaceKindOfExpr(
+  expr: ts.Expression,
+  ctx: FileContext,
+): Kind | undefined {
+  if (ts.isIdentifier(expr)) return ctx.namespaces.get(expr.text);
+  if (
+    ts.isPropertyAccessExpression(expr) &&
+    ts.isIdentifier(expr.expression) &&
+    ts.isIdentifier(expr.name) &&
+    ctx.compoundNamespaces.has(expr.expression.text)
+  ) {
+    return NAMESPACE_TO_KIND[expr.name.text];
+  }
+  return undefined;
+}
+
 function inferKindFromExpression(
   expr: ts.Expression,
   ctx: FileContext,
@@ -330,8 +386,10 @@ function inferKindFromExpression(
       if (f) return f.kind;
     }
     // Namespace.method: AVal.map(fn, av) → aval; ASet.collect → aset.
-    if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression)) {
-      const ns = ctx.namespaces.get(e.expression.text);
+    // Also handles X.AVal.map(...) when X is a bare adaptive
+    // namespace import (compoundNamespaces).
+    if (ts.isPropertyAccessExpression(e)) {
+      const ns = namespaceKindOfExpr(e.expression, ctx);
       if (ns) return ns;
     }
     // Method call x.map(...) — inherit kind from x.
@@ -439,11 +497,17 @@ function detectCombinator(
     if (!candidateKinds) {
       // not a combinator method
     } else {
-      // Determine receiver kind:
+      // Determine receiver kind. Identifier path is fast (look up local
+      // bindings); for any other expression shape — `cval(1).map(...)`,
+      // `getList().filter(...)`, parenthesized expressions — fall through
+      // to `inferKindFromExpression`, which handles constructor calls
+      // and namespace.method chains recursively.
       const receiver = callee.expression;
       let recvKind: Kind | undefined;
       if (ts.isIdentifier(receiver)) {
         recvKind = ctx.locals.get(receiver.text);
+      } else {
+        recvKind = inferKindFromExpression(receiver, ctx);
       }
       if (recvKind && candidateKinds.has(recvKind) && call.arguments.length >= 1) {
         const fn = call.arguments[0]!;
@@ -454,9 +518,9 @@ function detectCombinator(
           fn,
         };
       }
-      // Namespace form: AVal.map(fn, source)
-      if (ts.isIdentifier(receiver)) {
-        const ns = ctx.namespaces.get(receiver.text);
+      // Namespace form: AVal.map(fn, source) or X.AVal.map(fn, source).
+      {
+        const ns = namespaceKindOfExpr(receiver, ctx);
         if (ns && candidateKinds.has(ns) && call.arguments.length >= 2) {
           // Namespace signatures vary; in adaptive these are
           // `map(fn, source)` (aset/alist/amap) or `map(source, fn)`
@@ -714,15 +778,26 @@ function isBuiltinGlobal(name: string): boolean {
 // Function-body hash
 // ---------------------------------------------------------------------------
 
+// Shared printer with a fixed configuration. The printer's output is
+// derived purely from the AST structure — comments stripped, all
+// formatting normalized — so the body hash becomes stable across
+// equivalent-but-differently-formatted source. `t=>t*2` and
+// `t => t * 2` and `t =>   t   *   2` all hash identically.
+const HASH_PRINTER = ts.createPrinter({
+  newLine: ts.NewLineKind.LineFeed,
+  removeComments: true,
+  omitTrailingSemicolon: false,
+});
+
 function extractFnText(fn: ts.Expression): string {
   if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) {
     const sf = fn.getSourceFile();
-    if (sf) return sf.text.slice(fn.pos, fn.end).trim();
+    if (sf) return HASH_PRINTER.printNode(ts.EmitHint.Expression, fn, sf);
   }
   if (ts.isIdentifier(fn)) return `<id:${fn.text}>`;
   if (ts.isPropertyAccessExpression(fn)) {
     const sf = fn.getSourceFile();
-    if (sf) return sf.text.slice(fn.pos, fn.end).trim();
+    if (sf) return HASH_PRINTER.printNode(ts.EmitHint.Expression, fn, sf);
   }
   return "<anon>";
 }
