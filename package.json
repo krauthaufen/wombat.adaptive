@@ -75,6 +75,10 @@
       "types": "./dist/reference.d.ts",
       "import": "./dist/reference.js"
     },
+    "./internal": {
+      "types": "./dist/internal/memo.d.ts",
+      "import": "./dist/internal/memo.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {

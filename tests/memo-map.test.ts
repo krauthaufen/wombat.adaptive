@@ -1,17 +1,19 @@
-// Tests for `aval.memoMap` — opt-in dedup of derived avals by
-// `(source, f)` reference identity. See adaptiveValue.ts for the
-// design rationale.
+// Tests for `memoAvalMap` — opt-in dedup of derived avals by
+// `(source, f)` reference identity. Migrated from the old
+// public-API `aval.memoMap` to the new internal API in
+// `src/internal/memo.ts`.
 
 import { describe, expect, test } from "vitest";
-import { AVal, cval, memoMap } from "../src/adaptiveValue/adaptiveValue.js";
+import { AVal, cval } from "../src/adaptiveValue/adaptiveValue.js";
+import { memoAvalMap } from "../src/internal/memo.js";
 import { transact } from "../src/core/transaction.js";
 
-describe("[AVal] memoMap", () => {
+describe("[internal] memoAvalMap", () => {
   test("hit: same source + same fn returns same derived aval", () => {
     const av = cval(1);
     const f = (x: number) => x + 1;
-    const m1 = av.memoMap(f);
-    const m2 = av.memoMap(f);
+    const m1 = memoAvalMap(av, f);
+    const m2 = memoAvalMap(av, f);
     expect(m1).toBe(m2);
   });
 
@@ -19,8 +21,8 @@ describe("[AVal] memoMap", () => {
     const av1 = cval(1);
     const av2 = cval(1);
     const f = (x: number) => x + 1;
-    const m1 = av1.memoMap(f);
-    const m2 = av2.memoMap(f);
+    const m1 = memoAvalMap(av1, f);
+    const m2 = memoAvalMap(av2, f);
     expect(m1).not.toBe(m2);
   });
 
@@ -28,43 +30,27 @@ describe("[AVal] memoMap", () => {
     const av = cval(1);
     const f1 = (x: number) => x + 1;
     const f2 = (x: number) => x + 1; // structurally equal, distinct refs
-    const m1 = av.memoMap(f1);
-    const m2 = av.memoMap(f2);
+    const m1 = memoAvalMap(av, f1);
+    const m2 = memoAvalMap(av, f2);
     expect(m1).not.toBe(m2);
   });
 
   test("behavioural: getValue equals f(source)", () => {
     const av = cval(7);
     const f = (x: number) => x * 3;
-    const m = av.memoMap(f);
+    const m = memoAvalMap(av, f);
     expect(AVal.force(m)).toBe(21);
   });
 
   test("reactive propagation through memoized derivation", () => {
     const av = cval(2);
     const f = (x: number) => x * 10;
-    const m = av.memoMap(f);
+    const m = memoAvalMap(av, f);
     expect(AVal.force(m)).toBe(20);
     transact(() => {
       av.value = 5;
     });
     expect(AVal.force(m)).toBe(50);
-  });
-
-  test("free function form matches method form", () => {
-    const av = cval("hi");
-    const f = (s: string) => s.length;
-    const m1 = av.memoMap(f);
-    const m2 = memoMap(av, f);
-    expect(m1).toBe(m2);
-  });
-
-  test("AVal.memoMap namespace export", () => {
-    const av = cval(0);
-    const f = (x: number) => x;
-    const m1 = AVal.memoMap(av, f);
-    const m2 = AVal.memoMap(av, f);
-    expect(m1).toBe(m2);
   });
 
   test("structural integrity: callable when source is held only weakly", () => {
@@ -74,10 +60,10 @@ describe("[AVal] memoMap", () => {
     const av = cval(1);
     const ref = new WeakRef(av);
     const f = (x: number) => x + 1;
-    const m1 = av.memoMap(f);
+    const m1 = memoAvalMap(av, f);
     const live = ref.deref();
     expect(live).toBe(av);
-    const m2 = (live as typeof av).memoMap(f);
+    const m2 = memoAvalMap(live as typeof av, f);
     expect(m2).toBe(m1);
   });
 });

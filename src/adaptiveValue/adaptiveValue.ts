@@ -90,23 +90,6 @@ export interface aval<T> extends IAdaptiveValue_<T> {
   mapNonAdaptive<R>(f: (a: T) => R): aval<R>;
 
   /**
-   * Like `.map(f)` but caches by `(this, f)` reference identity.
-   * Multiple callers passing the same source aval and the same function
-   * reference get back the SAME derived aval — one allocation, one
-   * mark-callback, one downstream propagation.
-   *
-   * Caller asserts: `f` is pure (no captured mutable state) and
-   * reference-stable (typically a module-level function). Inline
-   * closures with captured variables may give wrong results — use
-   * `.map` for those.
-   *
-   * Cache is fully weak (key and value) — entries die when the source
-   * aval, the function, or the derived aval becomes unreachable from
-   * elsewhere.
-   */
-  memoMap<R>(f: (a: T) => R): aval<R>;
-
-  /**
    * Reads the current value. Untracked. Should not be called inside
    * another adaptive evaluation.
    */
@@ -182,9 +165,6 @@ export class ChangeableValue<T>
   mapNonAdaptive<R>(f: (a: T) => R): aval<R> {
     return mapNonAdaptive(this, f);
   }
-  memoMap<R>(f: (a: T) => R): aval<R> {
-    return memoMap(this, f);
-  }
   force(): T {
     return force(this);
   }
@@ -247,9 +227,6 @@ export abstract class AbstractVal<T>
   mapNonAdaptive<R>(f: (a: T) => R): aval<R> {
     return mapNonAdaptive(this, f);
   }
-  memoMap<R>(f: (a: T) => R): aval<R> {
-    return memoMap(this, f);
-  }
   force(): T {
     return force(this);
   }
@@ -303,9 +280,6 @@ class MapNonAdaptiveVal<A, B> extends DecoratorObject implements aval<B> {
   }
   mapNonAdaptive<R>(f: (a: B) => R): aval<R> {
     return mapNonAdaptive(this, f);
-  }
-  memoMap<R>(f: (a: B) => R): aval<R> {
-    return memoMap(this, f);
   }
   force(): B {
     return force(this);
@@ -376,9 +350,6 @@ class ConstantVal<T> extends ConstantObject implements aval<T> {
   }
   mapNonAdaptive<R>(f: (a: T) => R): aval<R> {
     return mapNonAdaptive(this, f);
-  }
-  memoMap<R>(f: (a: T) => R): aval<R> {
-    return memoMap(this, f);
   }
   force(): T {
     return force(this);
@@ -940,41 +911,6 @@ export function map<T, R>(value: aval<T>, f: (a: T) => R): aval<R> {
   return mapInternal([value], (v) => f(v as T));
 }
 
-// ---------------------------------------------------------------------------
-// memoMap — opt-in dedup of `(source, f)` pairs.
-//
-// Cache is fully weak: outer key is the source aval, inner key is the
-// mapping function, inner value is a `WeakRef<aval>` to the derived
-// aval. Entries collapse when the source, the function, or the derived
-// aval becomes unreachable from elsewhere. Callers assert `f` is pure
-// + reference-stable (typically a module-level function).
-// ---------------------------------------------------------------------------
-
-const memoMapCache: WeakMap<
-  aval<unknown>,
-  WeakMap<Function, WeakRef<aval<unknown>>>
-> = new WeakMap();
-
-export function memoMap<T, R>(value: aval<T>, f: (a: T) => R): aval<R> {
-  let inner = memoMapCache.get(value as aval<unknown>);
-  if (inner !== undefined) {
-    const ref = inner.get(f);
-    if (ref !== undefined) {
-      const cached = ref.deref();
-      if (cached !== undefined) {
-        return cached as aval<R>;
-      }
-      // derived was collected — fall through and recompute.
-    }
-  } else {
-    inner = new WeakMap<Function, WeakRef<aval<unknown>>>();
-    memoMapCache.set(value as aval<unknown>, inner);
-  }
-  const derived = map(value, f);
-  inner.set(f, new WeakRef(derived as aval<unknown>));
-  return derived;
-}
-
 export function bind<T, R>(
   value: aval<T>,
   f: (a: T) => aval<R>,
@@ -1152,7 +1088,6 @@ export const AVal = {
   map,
   bind,
   mapNonAdaptive,
-  memoMap,
   zip,
   addCallback,
   addWeakCallback,
