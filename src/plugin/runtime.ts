@@ -12,74 +12,75 @@
 
 import { __memo as __memoInternal } from "../internal/memo.js";
 
-// Intern primitive keys. The plugin emits cache keys that include the
-// body-hash (a string), and may also include captured-local references
-// extracted from the rewritten callback's closure. Captured locals are
-// arbitrary user values — quite often primitives (`scale: number`,
-// flags, etc.). MemoTrie's per-level WeakMap requires object keys, so
-// every primitive must be boxed to a stable object.
+// Plugin emits cache keys that mix three kinds of entries:
 //
-// We intern by typed key (`type:value`) so e.g. number 1 and string
-// "1" don't collide. Each unique primitive becomes a frozen wrapper
-// held strongly by this module. Growth is bounded by the set of
-// distinct values the user code actually passes; practical user code
-// has a small such set.
-const PRIMITIVE_INTERN = new Map<string, object>();
-function internPrimitive(typeTag: string, key: string): object {
-  const k = `${typeTag}:${key}`;
-  let v = PRIMITIVE_INTERN.get(k);
+//   1. Objects (op tag, source aval(s), object-typed closure deps).
+//      These have reference identity — they go directly into the
+//      MemoTrie's WeakMap path.
+//   2. The body-hash string emitted by the plugin at compile time
+//      (`"h:abc12345"`) — stable per call site.
+//   3. Primitive closure-deps (numbers, booleans, etc.) — values
+//      captured from the enclosing scope.
+//
+// MemoTrie needs object keys (per-level WeakMap). We collapse (2)
+// + (3) into ONE interned object: a frozen `{ k: string }` whose
+// string carries the body-hash plus a typed serialization of all
+// primitive deps in their original order. Two calls with the same
+// body and the same primitive-dep tuple share one interned object
+// → one cache-trie key → one entry. Distinct values produce
+// distinct strings → distinct entries.
+//
+// One interned object per unique (body × primitive-dep-tuple)
+// combination. Bounded by the user's code; in practice tiny.
+const COMBINED_INTERN = new Map<string, object>();
+function internCombined(s: string): object {
+  let v = COMBINED_INTERN.get(s);
   if (v === undefined) {
-    v = Object.freeze({ t: typeTag, v: key });
-    PRIMITIVE_INTERN.set(k, v);
+    v = Object.freeze({ k: s });
+    COMBINED_INTERN.set(s, v);
   }
   return v;
 }
 
-// Sentinels for non-string primitives that don't round-trip safely
-// through `String(x)`.
-const NULL_KEY = Object.freeze({ t: "null" });
-const UNDEF_KEY = Object.freeze({ t: "undefined" });
-const TRUE_KEY = Object.freeze({ t: "bool", v: true });
-const FALSE_KEY = Object.freeze({ t: "bool", v: false });
-
-function toKeyObject(k: unknown): object {
+// Length-prefixed type-tagged serialization so e.g. number 1 and
+// string "1" can't alias, and concatenation of multiple deps stays
+// unambiguous.
+function tagPrimitive(k: unknown): string {
   switch (typeof k) {
-    case "object":
-      return k === null ? NULL_KEY : (k as object);
-    case "function":
-      return k as object;
-    case "undefined":
-      return UNDEF_KEY;
-    case "boolean":
-      return k ? TRUE_KEY : FALSE_KEY;
-    case "string":
-      return internPrimitive("s", k);
-    case "number":
-      // NaN/Infinity/+0/-0 all stringify uniquely enough via String().
-      return internPrimitive("n", String(k));
-    case "bigint":
-      return internPrimitive("bi", k.toString());
-    case "symbol":
-      // Symbols already have identity; box them once for WeakMap use.
-      return internPrimitive("sym", (k as symbol).toString());
-    default:
-      // Should be unreachable.
-      return internPrimitive("?", String(k));
+    case "string":    return `s${(k as string).length}:${k as string}`;
+    case "number":    return `n:${String(k)};`;
+    case "boolean":   return k ? "t;" : "f;";
+    case "bigint":    return `bi:${(k as bigint).toString()};`;
+    case "undefined": return "u;";
+    case "symbol":    return `sym:${(k as symbol).toString()};`;
+    default:          return `?:${String(k)};`;  // unreachable in practice
   }
 }
 
 /**
  * Plugin-facing `__memo` wrapper. Accepts a key path that may mix
- * objects and primitives; every primitive is interned to a stable
- * boxed object so the underlying MemoTrie can use it as a WeakMap key.
+ * objects and primitives. Object entries go straight into the
+ * MemoTrie path. Primitive entries — including the body-hash string
+ * — are concatenated into one type-tagged interned-object key
+ * appended at the end of the path. Same primitive-tuple → same
+ * interned object → same cache entry.
  */
 export function __memo<T extends object>(
   keys: ReadonlyArray<unknown>,
   compute: () => T,
 ): T {
-  const objKeys: object[] = new Array(keys.length);
+  const objKeys: object[] = [];
+  let primParts = "";
   for (let i = 0; i < keys.length; i++) {
-    objKeys[i] = toKeyObject(keys[i]);
+    const k = keys[i];
+    if (k !== null && (typeof k === "object" || typeof k === "function")) {
+      objKeys.push(k as object);
+    } else {
+      primParts += tagPrimitive(k);
+    }
+  }
+  if (primParts.length > 0) {
+    objKeys.push(internCombined(primParts));
   }
   return __memoInternal(objKeys, compute);
 }
