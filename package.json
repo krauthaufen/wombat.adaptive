@@ -79,6 +79,14 @@
       "types": "./dist/internal/memo.d.ts",
       "import": "./dist/internal/memo.js"
     },
+    "./plugin": {
+      "types": "./dist/plugin/index.d.ts",
+      "import": "./dist/plugin/index.js"
+    },
+    "./plugin/runtime": {
+      "types": "./dist/plugin/runtime.d.ts",
+      "import": "./dist/plugin/runtime.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
