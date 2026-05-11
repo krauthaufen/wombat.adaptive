@@ -269,6 +269,14 @@ interface FileContext {
   readonly freeFns: Map<string, { kind: Kind; method: string }>;
   /** Local variable name → kind. Filled by `collectLocalBindings`. */
   readonly locals: Map<string, Kind>;
+  /**
+   * Identifiers introduced via `import type { X }` / `import { type X }`
+   * — they vanish at runtime, so referencing them as closure-deps would
+   * raise `ReferenceError: X is not defined`. Walking the callback body
+   * we naively see them as free identifiers; this set lets us drop
+   * them before emitting the memo key.
+   */
+  readonly typeOnlyImports: Set<string>;
 }
 
 function collectImports(sf: ts.SourceFile): FileContext {
@@ -278,7 +286,30 @@ function collectImports(sf: ts.SourceFile): FileContext {
     constructors: new Map(),
     freeFns: new Map(),
     locals: new Map(),
+    typeOnlyImports: new Set(),
   };
+
+  // First pass: collect type-only imports across ALL modules (not just
+  // adaptive). These identifiers don't exist at runtime — we must drop
+  // them from closure-dep keys.
+  for (const stmt of sf.statements) {
+    if (!ts.isImportDeclaration(stmt) || !stmt.importClause) continue;
+    const clause = stmt.importClause;
+    const wholeIsTypeOnly = clause.isTypeOnly === true;
+    if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+      for (const spec of clause.namedBindings.elements) {
+        if (wholeIsTypeOnly || spec.isTypeOnly === true) {
+          ctx.typeOnlyImports.add(spec.name.text);
+        }
+      }
+    }
+    if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings) && wholeIsTypeOnly) {
+      ctx.typeOnlyImports.add(clause.namedBindings.name.text);
+    }
+    if (clause.name && wholeIsTypeOnly) {
+      ctx.typeOnlyImports.add(clause.name.text);
+    }
+  }
 
   for (const stmt of sf.statements) {
     if (!ts.isImportDeclaration(stmt)) continue;
@@ -680,6 +711,11 @@ function analyzeClosureDeps(
         _ctx.constructors.has(name) ||
         _ctx.freeFns.has(name)
       ) {
+        return;
+      }
+      // Skip type-only imports — they vanish at runtime, so emitting them
+      // as closure deps would raise `ReferenceError: X is not defined`.
+      if (_ctx.typeOnlyImports.has(name)) {
         return;
       }
       // Treat as closure dep — emit as bare identifier.
