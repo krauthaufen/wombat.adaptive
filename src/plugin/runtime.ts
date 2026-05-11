@@ -187,30 +187,14 @@ export function __memo<T extends object>(
   keys: ReadonlyArray<unknown>,
   compute: () => T,
 ): T {
-  // Skip the trie entirely when every aval-typed input is constant.
-  // The combinator's output is itself constant — caching it would only
-  // serve identity-sharing for downstream consumers, but constants
-  // never mark, and the dedup that actually matters (large payloads
-  // through pools) lives at the consumer. The 95% case for memoization
-  // is reactive avals, which still flow through the trie below.
-  let avalCount = 0;
-  let constCount = 0;
-  for (let i = 0; i < keys.length; i++) {
-    const k = keys[i];
-    if (
-      k !== null &&
-      typeof k === "object" &&
-      "isConstant" in (k as object) &&
-      typeof (k as { isConstant: unknown }).isConstant === "boolean"
-    ) {
-      avalCount++;
-      if ((k as { isConstant: boolean }).isConstant) constCount++;
-    }
-  }
-  if (avalCount > 0 && avalCount === constCount) {
-    return compute();
-  }
-
+  // NOTE — we used to fast-path "all sources constant" by skipping the
+  // trie. That was wrong: even constant-source combinators benefit
+  // from identity-sharing downstream (e.g. `derivePipelineState` keys
+  // bucket caches on the topology aval's identity; without sharing,
+  // every leaf with the same `state.mode` / `state.fillMode` gets its
+  // own bucket). Always go through the trie — constants intern by
+  // value (see internSimple/Hashable paths below), reactive avals key
+  // by reference.
   const objKeys: object[] = [];
   let primParts = "";
   for (let i = 0; i < keys.length; i++) {

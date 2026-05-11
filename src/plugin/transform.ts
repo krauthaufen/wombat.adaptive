@@ -401,6 +401,32 @@ function namespaceKindOfExpr(
   return undefined;
 }
 
+/**
+ * Detect `<NS>.zip(a, b, c, …)` where `<NS>` resolves (via local
+ * namespace bindings or known adaptive imports) to a Kind whose
+ * `Zipped` wrapper's `.map`/`.bind` we want to memoise. Returns the
+ * underlying aval arguments to be used as cache sources, or `null` if
+ * the expression isn't a `zip` call we understand.
+ *
+ * Strict by design: a call like `getZippedFromSomewhere().map(fn)`
+ * doesn't qualify — we can only safely expand when the zip arguments
+ * are textually present at this call site.
+ */
+function unwrapZipCall(
+  expr: ts.Expression,
+  expectedKind: Kind,
+  ctx: FileContext,
+): ts.Expression[] | null {
+  if (!ts.isCallExpression(expr)) return null;
+  const callee = expr.expression;
+  if (!ts.isPropertyAccessExpression(callee)) return null;
+  if (!ts.isIdentifier(callee.name) || callee.name.text !== "zip") return null;
+  const ns = namespaceKindOfExpr(callee.expression, ctx);
+  if (ns !== expectedKind) return null;
+  if (expr.arguments.length === 0) return null;
+  return [...expr.arguments];
+}
+
 function inferKindFromExpression(
   expr: ts.Expression,
   ctx: FileContext,
@@ -542,6 +568,23 @@ function detectCombinator(
       }
       if (recvKind && candidateKinds.has(recvKind) && call.arguments.length >= 1) {
         const fn = call.arguments[0]!;
+        // n-ary zip combinator: `<NS>.zip(a, b, ...).map/bind(fn)`.
+        // The receiver is a fresh `Zipped` wrapper allocated on every
+        // call, so using it as the memo source would never share. We
+        // detect the call shape and expand to the underlying avals as
+        // sources, switching the tag to TAG_<KIND>_ZIPN so two call
+        // sites with identical input avals collapse to one cache key.
+        if (recvKind === "aval" && (method === "map" || method === "bind")) {
+          const zipArgs = unwrapZipCall(receiver, recvKind, ctx);
+          if (zipArgs !== null && COMBINATORS[recvKind].zipN !== undefined) {
+            return {
+              kind: recvKind,
+              method: "zipN",
+              sources: zipArgs,
+              fn,
+            };
+          }
+        }
         return {
           kind: recvKind,
           method,
