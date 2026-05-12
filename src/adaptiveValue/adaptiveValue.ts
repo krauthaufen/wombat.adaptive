@@ -46,6 +46,7 @@ import {
 } from "../core/transaction.js";
 import type { IDisposable } from "../core/callbacks.js";
 import type { IAdaptiveObject } from "../core/types.js";
+import { defaultEquals, defaultHash } from "../datastructures/equality.js";
 
 // ---------------------------------------------------------------------------
 // IAdaptiveValue interfaces
@@ -377,12 +378,34 @@ class ConstantVal<T> extends ConstantObject implements aval<T> {
 
   // PORT NOTE: F# overrode `Equals`/`GetHashCode` so two ConstantVals
   // with equal contained values are considered equal. JS `===` is
-  // identity-only — exposed as a `equals` method instead. The
-  // `constantEquals` helper at the bottom of this file is the
-  // documented way to compare constants.
+  // identity-only — exposed as `equals` / `getHashCode` instead.
+  //
+  // We compare/hash by CONTENT (`defaultEquals`/`defaultHash` over the
+  // contained value), not by reference. This is the "constant branch"
+  // of the aval equality protocol: two `AVal.constant(v)` built at
+  // distinct call sites — including ones wrapping structurally-equal
+  // value types like `V3f` / `ITexture` (url) — collapse to one key
+  // in any `HashTable<aval<T>, …>`-backed cache (AtlasPool, UniformPool,
+  // …) and in the closure-memo intern. Non-constant avals have no
+  // `equals`/`getHashCode` → `defaultEquals`/`defaultHash` fall back to
+  // reference identity for them, which is the correct semantics (their
+  // value can change, so only identity is stable).
+  //
+  // The hash is memoised on first call: a `ConstantVal`'s contained
+  // value is immutable, so the hash never changes. (`getCached()` is
+  // already lazy/idempotent, so hashing a never-forced constant just
+  // forces it — safe by definition for constants.)
+  private _hashCache: number | undefined = undefined;
+  getHashCode(): number {
+    if (this._hashCache === undefined) {
+      this._hashCache = defaultHash(this.getCached()) | 0;
+    }
+    return this._hashCache;
+  }
   equals(other: unknown): boolean {
+    if (this === other) return true;
     if (other instanceof ConstantVal) {
-      return Object.is(this.getCached(), other.getCached());
+      return defaultEquals(this.getCached(), other.getCached());
     }
     return false;
   }

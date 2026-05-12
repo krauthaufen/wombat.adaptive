@@ -198,7 +198,26 @@ export function __memo<T extends object>(
   const objKeys: object[] = [];
   let primParts = "";
   for (let i = 0; i < keys.length; i++) {
-    const k = keys[i];
+    let k = keys[i];
+    // Constant aval: substitute its (immutable) contained value before
+    // classifying. A `ConstantVal` is itself `isHashable` (it has
+    // value-based equals/getHashCode), so it would otherwise be
+    // interned into `HASHABLE_BUCKETS` — strongly retaining the aval
+    // wrapper AND whatever it wraps, forever. By unwrapping we instead
+    // key on the value: a value-type (`V3f`, url-`ITexture`, …) interns
+    // into the same bounded bucket it would have if passed directly; an
+    // opaque payload (`Uint8Array`, host-buffer, `GPUTexture`) falls to
+    // reference identity and is weakly held by the memo trie — same
+    // retention as passing the value directly. Reactive (non-constant)
+    // avals are left as-is and key by reference, which is correct since
+    // their value can change.
+    if (
+      k !== null && typeof k === "object" &&
+      (k as { isConstant?: unknown }).isConstant === true &&
+      typeof (k as { force?: unknown }).force === "function"
+    ) {
+      k = (k as { force(): unknown }).force();
+    }
     if (k !== null && (typeof k === "object" || typeof k === "function")) {
       // Three classes of object-typed keys:
       //   1. Aardvark value-types (V3f / M44f / ...): hash-bucket +

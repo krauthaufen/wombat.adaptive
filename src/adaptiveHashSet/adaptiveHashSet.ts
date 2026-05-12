@@ -247,6 +247,34 @@ class MapReader<A, B> extends AbstractReader<HashSetDelta<B>> {
   }
 }
 
+/**
+ * Variant of {@link MapReader} that runs a `dispose` callback when a
+ * value drops out of the cache (refcount → 0). Used by `mapUse` to
+ * tie acquire/release-style resources to an aset entry's lifetime.
+ */
+class MapUseReader<A, B> extends AbstractReader<HashSetDelta<B>> {
+  private readonly _cache: Cache<A, B>;
+  private readonly _dispose: (b: B) => void;
+  private readonly _reader: IHashSetReader<A>;
+  constructor(input: aset<A>, mapping: (a: A) => B, dispose: (b: B) => void) {
+    super(HashSetDelta.empty<B>());
+    this._cache = new Cache<A, B>(mapping);
+    this._dispose = dispose;
+    this._reader = input.getReader();
+  }
+  override compute(tok: AdaptiveToken): HashSetDelta<B> {
+    return this._reader.getChanges(tok).map((d) => {
+      if (d.count === 1) return SetOperation.add(this._cache.invoke(d.value));
+      if (d.count === -1) {
+        const r = this._cache.revokeAndGetDeletedUnsafe(d.value);
+        if (r.deleted) this._dispose(r.value);
+        return SetOperation.rem(r.value);
+      }
+      throw new Error("[ASet] unexpected delta count");
+    });
+  }
+}
+
 class ChooseReader<A, B> extends AbstractReader<HashSetDelta<B>> {
   private readonly _cache: Cache<A, B | undefined>;
   private readonly _reader: IHashSetReader<A>;
@@ -858,6 +886,33 @@ export function map<A, B>(mapping: (a: A) => B, set: aset<A>): aset<B> {
   return ofReaderInternal<B>(
     () =>
       new MapReader<A, B>(set, mapping) as unknown as IOpReaderWithState<
+        unknown,
+        HashSetDelta<B>
+      >,
+  );
+}
+
+/**
+ * Like {@link map}, but `dispose(b)` runs when a mapped value is
+ * actually evicted from the reader's refcount cache (i.e. when the
+ * underlying aset's last copy of the source value is removed). Use for
+ * mappings that allocate side-table state (registry entries, GPU pool
+ * refs, …) whose lifetime is exactly the source entry's residence in
+ * the set.
+ *
+ * Multiplicity-preserving: if the source aset adds the same value
+ * twice, `mapping` runs once and `dispose` runs when the count
+ * returns to zero.
+ */
+export function mapUse<A, B>(
+  mapping: (a: A) => B,
+  dispose: (b: B) => void,
+  set: aset<A>,
+): aset<B> {
+  if (set.isConstant) return constant(() => force(set).map(mapping));
+  return ofReaderInternal<B>(
+    () =>
+      new MapUseReader<A, B>(set, mapping, dispose) as unknown as IOpReaderWithState<
         unknown,
         HashSetDelta<B>
       >,
@@ -1742,6 +1797,7 @@ export const ASet = {
   ofReader,
   custom,
   map,
+  mapUse,
   choose,
   filter,
   collect,
