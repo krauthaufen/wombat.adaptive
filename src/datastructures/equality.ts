@@ -50,7 +50,7 @@ function hashNumber(n: number): number {
 let _identityCounter = 0;
 const _identityHashes = new WeakMap<object, number>();
 
-function hashObjectIdentity(o: object): number {
+export function hashObjectIdentity(o: object): number {
   let id = _identityHashes.get(o);
   if (id === undefined) {
     _identityCounter = (_identityCounter + 1) | 0;
@@ -126,4 +126,25 @@ export const defaultComparer: IEqualityComparer<unknown> = {
 
 export function comparerFor<K>(): IEqualityComparer<K> {
   return defaultComparer as IEqualityComparer<K>;
+}
+
+/**
+ * Shallow (1-level) hash for `ConstantVal.getHashCode()`: a primitive
+ * hashes by value; an object/function hashes by *identity*. Pairs with
+ * `Object.is` shallow equality — so two `AVal.constant(x)` collapse iff
+ * `x` is the same primitive or the same object reference (the realistic
+ * dedup case — shared textures / geometry buffers / etc.) — without ever
+ * doing a deep structural compare (which, at scale with one constant
+ * per scene leaf, would turn a `HashTable` lookup into O(bucket)).
+ */
+export function shallowHash(k: unknown): number {
+  if (k === null || k === undefined) return 0;
+  switch (typeof k) {
+    case "number":  return hashNumber(k);
+    case "string":  return hashString(k);
+    case "boolean": return k ? 1 : 0;
+    case "bigint":  return hashString(k.toString());
+    case "symbol":  return hashString(k.toString());
+    default:        return hashObjectIdentity(k as object);
+  }
 }

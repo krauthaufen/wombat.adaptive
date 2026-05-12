@@ -80,6 +80,13 @@ function isHashable(k: object): k is Hashable {
   return typeof hc === "function" && typeof eq === "function";
 }
 
+/** Duck-type for "this memo key is an aval". Avals expose
+ *  `getValue(token)` (and `getValueUntyped`); that's enough to tell
+ *  them apart from value-typed objects (`V3f`, …) which never do. */
+function isAvalLike(k: object): boolean {
+  return typeof (k as { getValue?: unknown }).getValue === "function";
+}
+
 // Hash-bucket intern table for value-typed objects. Map<hashCode,
 // Array<{ value, key }>>. On a hash collision, we walk the bucket
 // calling equals() to find a matching entry. If none matches, we
@@ -198,46 +205,35 @@ export function __memo<T extends object>(
   const objKeys: object[] = [];
   let primParts = "";
   for (let i = 0; i < keys.length; i++) {
-    let k = keys[i];
-    // Constant aval: substitute its (immutable) contained value before
-    // classifying. A `ConstantVal` is itself `isHashable` (it has
-    // value-based equals/getHashCode), so it would otherwise be
-    // interned into `HASHABLE_BUCKETS` — strongly retaining the aval
-    // wrapper AND whatever it wraps, forever. By unwrapping we instead
-    // key on the value: a value-type (`V3f`, url-`ITexture`, …) interns
-    // into the same bounded bucket it would have if passed directly; an
-    // opaque payload (`Uint8Array`, host-buffer, `GPUTexture`) falls to
-    // reference identity and is weakly held by the memo trie — same
-    // retention as passing the value directly. Reactive (non-constant)
-    // avals are left as-is and key by reference, which is correct since
-    // their value can change.
-    if (
-      k !== null && typeof k === "object" &&
-      (k as { isConstant?: unknown }).isConstant === true &&
-      typeof (k as { force?: unknown }).force === "function"
-    ) {
-      k = (k as { force(): unknown }).force();
-    }
+    const k = keys[i];
     if (k !== null && (typeof k === "object" || typeof k === "function")) {
-      // Three classes of object-typed keys:
-      //   1. Aardvark value-types (V3f / M44f / ...): hash-bucket +
-      //      equals-based interning so distinct instances with equal
-      //      data dedup correctly even on hashCode collision.
-      //   2. "Simple" plain objects / arrays (own enumerable keys only,
-      //      primitive leaves, depth-bounded): serialize structurally
-      //      and intern via a module-level Map. Two `{r:1,g:0,b:0}`
-      //      literals captured at distinct call sites collapse to one
-      //      cache key.
-      //   3. Everything else (class instances, functions, exotic
-      //      objects): fall through to reference identity. Safe
-      //      default — the cache may have more entries than ideal but
-      //      never returns a wrong result.
-      if (isHashable(k as object)) {
+      // Avals key by REFERENCE — this cache dedups combinator
+      // call-sites that share the *same* source aval variable
+      // (`av.map(fn)` written twice with the same `av`), which is
+      // identity. We deliberately do NOT value-intern constant avals
+      // here: a `ConstantVal` is technically `isHashable` (it carries
+      // value-based equals/getHashCode for the explicit pool caches),
+      // and routing it through `internHashable` walks a hash bucket
+      // calling `equals()` — at scale (one `AVal.constant(Trafo3d…)`
+      // per scene leaf, all colliding into one bucket because the
+      // matrix-hash distribution is poor) that's O(N²) per frame.
+      // Content-equality dedup of constants belongs in the bounded
+      // `HashTable`-keyed resource pools, not in this unbounded memo.
+      if (isAvalLike(k)) {
+        objKeys.push(k as object);
+      } else if (isHashable(k as object)) {
+        // Aardvark value-types passed *directly* (not wrapped in an
+        // aval): V3f / M44f / ... — hash-bucket + equals interning so
+        // distinct-instance / equal-data collapses. Bounded in
+        // practice (a handful of distinct colours / sizes / etc.).
         objKeys.push(internHashable(k as Hashable));
       } else if (typeof k === "object") {
+        // "Simple" plain objects / arrays with primitive leaves —
+        // serialise + intern via a module-level Map.
         const handle = internSimple(k as object);
         objKeys.push(handle ?? (k as object));
       } else {
+        // Functions / exotic objects → reference identity.
         objKeys.push(k as object);
       }
     } else {

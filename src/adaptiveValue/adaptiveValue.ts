@@ -46,7 +46,7 @@ import {
 } from "../core/transaction.js";
 import type { IDisposable } from "../core/callbacks.js";
 import type { IAdaptiveObject } from "../core/types.js";
-import { defaultEquals, defaultHash } from "../datastructures/equality.js";
+import { shallowHash } from "../datastructures/equality.js";
 
 // ---------------------------------------------------------------------------
 // IAdaptiveValue interfaces
@@ -380,32 +380,35 @@ class ConstantVal<T> extends ConstantObject implements aval<T> {
   // with equal contained values are considered equal. JS `===` is
   // identity-only — exposed as `equals` / `getHashCode` instead.
   //
-  // We compare/hash by CONTENT (`defaultEquals`/`defaultHash` over the
-  // contained value), not by reference. This is the "constant branch"
-  // of the aval equality protocol: two `AVal.constant(v)` built at
-  // distinct call sites — including ones wrapping structurally-equal
-  // value types like `V3f` / `ITexture` (url) — collapse to one key
-  // in any `HashTable<aval<T>, …>`-backed cache (AtlasPool, UniformPool,
-  // …) and in the closure-memo intern. Non-constant avals have no
+  // We compare/hash *shallowly* — by the contained value's IDENTITY
+  // (`Object.is` for objects/functions; by value for primitives). So
+  // two `AVal.constant(x)` collapse iff `x` is literally the same
+  // primitive or the same object reference. That covers the realistic
+  // dedup case (a shared `ITexture` / geometry buffer / sampler passed
+  // through `AVal.constant(...)` at many call sites) without ever doing
+  // a deep structural compare on the contained value — which, when one
+  // distinct constant exists per scene leaf, would degrade a
+  // `HashTable<aval<T>, …>` lookup (AtlasPool, …) into O(bucket) and
+  // blow up boot/frame time. (Non-constant avals have no
   // `equals`/`getHashCode` → `defaultEquals`/`defaultHash` fall back to
-  // reference identity for them, which is the correct semantics (their
-  // value can change, so only identity is stable).
+  // reference identity for them too, which is correct — their value
+  // can change, so only identity is stable.)
   //
   // The hash is memoised on first call: a `ConstantVal`'s contained
   // value is immutable, so the hash never changes. (`getCached()` is
-  // already lazy/idempotent, so hashing a never-forced constant just
-  // forces it — safe by definition for constants.)
+  // lazy/idempotent, so hashing a never-forced constant just forces it
+  // — safe by definition for constants.)
   private _hashCache: number | undefined = undefined;
   getHashCode(): number {
     if (this._hashCache === undefined) {
-      this._hashCache = defaultHash(this.getCached()) | 0;
+      this._hashCache = shallowHash(this.getCached()) | 0;
     }
     return this._hashCache;
   }
   equals(other: unknown): boolean {
     if (this === other) return true;
     if (other instanceof ConstantVal) {
-      return defaultEquals(this.getCached(), other.getCached());
+      return Object.is(this.getCached(), other.getCached());
     }
     return false;
   }
