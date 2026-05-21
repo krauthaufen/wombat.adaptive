@@ -22,7 +22,7 @@ A TypeScript port of [FSharp.Data.Adaptive](https://github.com/fsprojects/FSharp
 Phases are ordered to maximize "first end-to-end success" — AVal works fully before any collection work begins, so the core protocol is proven before more complex pieces are layered on.
 
 ### Phase 1 — AVal core foundation
-Everything `AVal` needs to compile and run, minus AVal itself. See `phase1.md` for the detailed plan.
+Everything `AVal` needs to compile and run, minus AVal itself. (Phase shipped; see `TODO.md` for remaining open items.)
 
 - **Files**: `Core/Core.fs`, `Core/AdaptiveToken.fs`, `Core/AdaptiveObject.fs`, `Core/Transaction.fs`, `Core/Callbacks.fs`, `Core/DecoratorObject.fs`, `Utilities/PriorityQueue.fs`.
 - **Tests**: `WeakOutputSet.fs`, `Transaction.fs`, `PriorityQueue.fs` (Callbacks tests live in phase 2 since they exercise AVal).

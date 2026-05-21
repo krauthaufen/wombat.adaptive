@@ -115,9 +115,12 @@ s.count; // 1
 - ✅ Cross-collection bridges (ASet ↔ AList ↔ AMap)
 - ✅ Callbacks with state+delta payloads
 - ✅ Reference impl + 500-run property tests for AVal / ASet / AMap / AList
-- ⏭️ `mapUse` / `mapUsei` (F# uses `IDisposable`; would map to `Symbol.dispose`)
+- ✅ `ASet.mapUse` (refcount-zero dispose callback)
+- ⏭️ `mapUse` for AList / AMap + `mapUsei` (F# uses `IDisposable`; would map to `Symbol.dispose`)
 - ⏭️ `Adaptify` codegen (separate library)
 - ⏭️ Tree expansion: `ASet.ofListTree` / `ASet.ofSetTree`
+
+Open items are tracked in [`TODO.md`](./TODO.md).
 
 ## Build & test
 

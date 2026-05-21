@@ -8,8 +8,10 @@ Architectural / cross-cutting items live in `~/claude/wombat-todo.md`.
 
 ## Open
 
-- **`mapUse` / `mapUsei`** — F# `IDisposable`-style mapping; would map to
-  `Symbol.dispose` in TS.
+- **`mapUse` for AList/AMap + `mapUsei`** — `ASet.mapUse` is already implemented
+  (refcount-zero dispose callback; `adaptiveHashSet.ts`). Still missing: the
+  AList/AMap variants and the indexed `mapUsei`. (Some test comments still claim
+  ASet's isn't ported — stale.)
 - **Adaptify codegen** — separate library that generates adaptive wrappers for
   record types.
 - **Tree expansion** — `ASet.ofListTree` / `ASet.ofSetTree`.
