@@ -1,13 +1,16 @@
 // Port of FSharp.Data.Adaptive Utilities/Cache.fs
 //
 // PORT NOTE: F# original uses `Dictionary<T1, _>` with the runtime
-// default equality comparer. The TS port is backed by `HashTable`
-// (see `hashTable.ts`) which honours the `equals(other)` /
-// `getHashCode()` convention from `equality.ts`. Lookup is a single
-// hash + bucket scan (length 1 in the common case), and inserts /
-// removes are in-place — no path-copy.
+// default equality comparer. The TS port is backed by the internal
+// `Dict` (see `datastructures/dict.ts`) which honours the
+// `equals(other)` / `getHashCode()` convention from `equality.ts`
+// with .NET-Dictionary layout (Int32Array buckets/chains + parallel
+// stores) — no per-entry tuple/bucket objects, and every operation is
+// a single probe: `invoke` rides `getOrAdd` with ONE factory closure
+// allocated per Cache (never per call), revokes mutate the entry
+// in place and only touch the table again for the refcount-0 removal.
 
-import { HashTable } from "./hashTable.js";
+import { Dict } from "../datastructures/dict.js";
 
 interface Entry<T2> {
   value: T2;
@@ -23,10 +26,13 @@ interface Entry<T2> {
  */
 export class Cache<T1, T2> {
   private readonly _mapping: (v: T1) => T2;
-  private readonly _cache: HashTable<T1, Entry<T2>> = new HashTable<
-    T1,
-    Entry<T2>
-  >();
+  private readonly _cache: Dict<T1, Entry<T2>> = new Dict();
+  /** Shared getOrAdd factory — starts at refCount 0; `invoke` bumps
+   *  unconditionally, so a fresh entry ends up at 1 like a hit. */
+  private readonly _newEntry = (v: T1): Entry<T2> => ({
+    value: this._mapping(v),
+    refCount: 0,
+  });
 
   constructor(mapping: (v: T1) => T2) {
     this._mapping = mapping;
@@ -47,24 +53,19 @@ export class Cache<T1, T2> {
    * reference count.
    */
   invoke(v: T1): T2 {
-    const existing = this._cache.get(v);
-    if (existing !== undefined) {
-      existing.refCount += 1;
-      return existing.value;
-    }
-    const r = this._mapping(v);
-    this._cache.set(v, { value: r, refCount: 1 });
-    return r;
+    const e = this._cache.getOrAdd(v, this._newEntry);
+    e.refCount += 1;
+    return e.value;
   }
 
   revokeAndGetDeletedUnsafe(v: T1): { deleted: boolean; value: T2 } {
-    const existing = this._cache.get(v);
+    const existing = this._cache.tryGet(v);
     if (existing === undefined) {
       throw new Error(`cannot revoke unknown value: ${String(v)}`);
     }
     existing.refCount -= 1;
     if (existing.refCount === 0) {
-      this._cache.delete(v);
+      this._cache.remove(v);
       return { deleted: true, value: existing.value };
     }
     return { deleted: false, value: existing.value };
@@ -73,11 +74,11 @@ export class Cache<T1, T2> {
   tryRevokeAndGetDeleted(
     v: T1,
   ): { deleted: boolean; value: T2 } | undefined {
-    const existing = this._cache.get(v);
+    const existing = this._cache.tryGet(v);
     if (existing === undefined) return undefined;
     existing.refCount -= 1;
     if (existing.refCount === 0) {
-      this._cache.delete(v);
+      this._cache.remove(v);
       return { deleted: true, value: existing.value };
     }
     return { deleted: false, value: existing.value };
@@ -88,10 +89,10 @@ export class Cache<T1, T2> {
   }
 
   tryRevoke(v: T1): T2 | undefined {
-    const existing = this._cache.get(v);
+    const existing = this._cache.tryGet(v);
     if (existing === undefined) return undefined;
     existing.refCount -= 1;
-    if (existing.refCount === 0) this._cache.delete(v);
+    if (existing.refCount === 0) this._cache.remove(v);
     return existing.value;
   }
 
