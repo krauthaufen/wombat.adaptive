@@ -1,6 +1,6 @@
 {
   "name": "@aardworx/wombat.adaptive",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Incremental adaptive computations (aval/aset/amap/alist) for the Wombat TypeScript stack. Port of F# FSharp.Data.Adaptive.",
   "license": "MIT",
   "author": "krauthaufen",
