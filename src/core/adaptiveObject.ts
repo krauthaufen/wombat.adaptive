@@ -105,7 +105,9 @@ export function setUnsafePerformLevelChecking(v: boolean): void {
 export class AdaptiveObject implements IAdaptiveObject {
   private _outOfDate = true;
   private _level = 0;
-  private _outputs: WeakOutputSet = new WeakOutputSet();
+  // Lazily allocated on first output registration — a node that is
+  // only ever force-read (or not yet consumed) carries `null` here.
+  private _outputs: WeakOutputSet | null = null;
   private _weak: WeakRef<IAdaptiveObject> | null = null;
   private _tag: unknown = null;
 
@@ -134,7 +136,7 @@ export class AdaptiveObject implements IAdaptiveObject {
   }
 
   get outputs(): IWeakOutputSet {
-    return this._outputs;
+    return (this._outputs ??= new WeakOutputSet());
   }
 
   get tag(): unknown {
@@ -208,7 +210,7 @@ export class AdaptiveObject implements IAdaptiveObject {
       res = r;
 
       if (caller !== null) {
-        this._outputs.add(caller);
+        (this._outputs ??= new WeakOutputSet()).add(caller);
         caller.level = Math.max(caller.level, this._level + 1);
       }
     } catch (e) {

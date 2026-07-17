@@ -11,6 +11,16 @@
 // PORT NOTE: the F# .NET variant uses `lock x (fun () -> ...)` around all
 // public operations. JS is single-threaded so the lock calls are removed.
 // Comments mark each location that originally held a lock.
+//
+// MEMORY NOTE (scene-templates M2): the whole state lives in ONE
+// `_data` slot discriminated by runtime type —
+//   null                → empty
+//   WeakRef             → single output (the overwhelmingly common case)
+//   Array<WeakRef|null> → up to ArrayCapacity outputs
+//   SetBox              → many outputs (Set + cleanup op counter)
+// A scene with 200k adaptive nodes carries 200k of these objects, so
+// the previous 5-field layout (~64 B each) was a top heap item; this
+// layout is ~24 B for the empty/single states.
 
 import {
   IAdaptiveObject,
@@ -21,119 +31,106 @@ import {
 
 const ArrayCapacity = 8;
 
-// PORT NOTE: F# used `[<Struct; StructLayout(LayoutKind.Explicit)>]
-// VolatileSetData` with field-offset 0 for all variants — a tagged union
-// implemented as an unsafe overlay. We replace this with a discriminated
-// union represented by the `tag` field and a single `data` slot whose
-// runtime type matches the tag. Behaviour is identical.
-const TAG_SINGLE_OR_ARRAY = 0;
-const TAG_ARRAY = 1;
-const TAG_SET = 2;
+/** Set-mode box: the Set plus the cleanup op counter (only needed in
+ *  set mode — dead WeakRefs accumulate invisibly there, while the
+ *  array mode reuses dead slots on add and compacts on remove). */
+class SetBox {
+  ops = 0;
+  constructor(readonly set: Set<WeakRef<IAdaptiveObject>>) {}
+}
+
+type OutputData =
+  | null
+  | WeakRef<IAdaptiveObject>
+  | (WeakRef<IAdaptiveObject> | null)[]
+  | SetBox;
 
 export class WeakOutputSet implements IWeakOutputSet {
-  // tag = 0: single (data is WeakRef | null) or empty (data is null)
-  // tag = 1: array of (WeakRef | null), capacity ArrayCapacity
-  // tag = 2: Set of WeakRef
-  private _tag = TAG_SINGLE_OR_ARRAY;
-  private _single: WeakRef<IAdaptiveObject> | null = null;
-  private _array: (WeakRef<IAdaptiveObject> | null)[] | null = null;
-  private _set: Set<WeakRef<IAdaptiveObject>> | null = null;
-  private _setOps = 0;
+  private _data: OutputData = null;
 
   private _add(obj: IAdaptiveObject): boolean {
     const weakObj = obj.weak;
-    switch (this._tag) {
-      case TAG_SINGLE_OR_ARRAY: {
-        if (this._single === null) {
-          this._single = weakObj;
-          return true;
-        } else if (this._single === weakObj) {
-          return false;
+    const data = this._data;
+    if (data === null) {
+      this._data = weakObj;
+      return true;
+    }
+    if (data instanceof WeakRef) {
+      if (data === weakObj) return false;
+      const existing = data.deref();
+      if (existing !== undefined) {
+        if (existing === obj) return false;
+        const arr: (WeakRef<IAdaptiveObject> | null)[] = new Array(
+          ArrayCapacity,
+        ).fill(null);
+        arr[0] = data;
+        arr[1] = weakObj;
+        this._data = arr;
+        return true;
+      }
+      // Existing single is dead — replace it.
+      this._data = weakObj;
+      return true;
+    }
+    if (Array.isArray(data)) {
+      const arr = data;
+      let freeIndex = -1;
+      let i = 0;
+      const len = arr.length;
+      while (i < len) {
+        const slot = arr[i];
+        if (slot === null) {
+          if (freeIndex < 0) freeIndex = i;
+        } else if (slot === weakObj) {
+          freeIndex = -2;
+          i = len;
+          break;
         } else {
-          const existing = this._single.deref();
-          if (existing !== undefined) {
-            if (existing === obj) {
-              return false;
-            } else {
-              const arr: (WeakRef<IAdaptiveObject> | null)[] = new Array(
-                ArrayCapacity,
-              ).fill(null);
-              arr[0] = this._single;
-              arr[1] = weakObj;
-              this._tag = TAG_ARRAY;
-              this._array = arr;
-              this._single = null;
-              return true;
+          const v = slot.deref();
+          if (v !== undefined) {
+            if (v === obj) {
+              freeIndex = -2;
+              i = len;
+              break;
             }
           } else {
-            // Existing single is dead — replace it.
-            this._single = weakObj;
-            return true;
-          }
-        }
-      }
-      case TAG_ARRAY: {
-        const arr = this._array!;
-        let freeIndex = -1;
-        let i = 0;
-        const len = arr.length;
-        while (i < len) {
-          const slot = arr[i];
-          if (slot === null) {
             if (freeIndex < 0) freeIndex = i;
-          } else if (slot === weakObj) {
-            freeIndex = -2;
-            i = len;
-            break;
-          } else {
-            const v = slot.deref();
-            if (v !== undefined) {
-              if (v === obj) {
-                freeIndex = -2;
-                i = len;
-                break;
-              }
-            } else {
-              if (freeIndex < 0) freeIndex = i;
-            }
           }
-          i++;
         }
-
-        if (freeIndex === -2) {
-          return false;
-        } else if (freeIndex >= 0) {
-          arr[freeIndex] = weakObj;
-          return true;
-        } else {
-          // r cannot be null here (empty index would have been found)
-          const set = new Set<WeakRef<IAdaptiveObject>>();
-          for (const r of arr) {
-            if (r !== null && r.deref() !== undefined) set.add(r);
-          }
-          const sizeBefore = set.size;
-          set.add(weakObj);
-          const added = set.size > sizeBefore;
-          this._tag = TAG_SET;
-          this._set = set;
-          this._array = null;
-          return added;
-        }
+        i++;
       }
-      default: {
-        const set = this._set!;
-        const before = set.size;
+
+      if (freeIndex === -2) {
+        return false;
+      } else if (freeIndex >= 0) {
+        arr[freeIndex] = weakObj;
+        return true;
+      } else {
+        // r cannot be null here (empty index would have been found)
+        const set = new Set<WeakRef<IAdaptiveObject>>();
+        for (const r of arr) {
+          if (r !== null && r.deref() !== undefined) set.add(r);
+        }
+        const sizeBefore = set.size;
         set.add(weakObj);
-        return set.size > before;
+        const added = set.size > sizeBefore;
+        this._data = new SetBox(set);
+        return added;
       }
     }
+    // set mode
+    const set = data.set;
+    const before = set.size;
+    set.add(weakObj);
+    return set.size > before;
   }
 
   /** Used internally to get rid of leaking WeakReferences. */
   private cleanup(): void {
     // F# original: `lock x (fun () -> ...)`. JS single-threaded, no lock.
-    if (this._setOps > 100) {
-      this._setOps = 0;
+    const data = this._data;
+    if (data instanceof SetBox && data.ops > 100) {
+      data.ops = 0;
       const buf: OutputBuffer = { value: new Array(100).fill(undefined) };
       const cnt = this.consume(buf);
       for (let i = 0; i < cnt; i++) {
@@ -151,8 +148,11 @@ export class WeakOutputSet implements IWeakOutputSet {
     if (obj.isConstant) return false;
     // F# original: `lock x (fun () -> ...)`. Removed.
     if (this._add(obj)) {
-      this._setOps += 1;
-      this.cleanup();
+      const data = this._data;
+      if (data instanceof SetBox) {
+        data.ops += 1;
+        this.cleanup();
+      }
       return true;
     } else {
       return false;
@@ -166,109 +166,78 @@ export class WeakOutputSet implements IWeakOutputSet {
   remove(obj: IAdaptiveObject): boolean {
     if (obj.isConstant) return false;
     // F# original: `lock x (fun () -> ...)`. Removed.
-    switch (this._tag) {
-      case TAG_SINGLE_OR_ARRAY: {
-        if (this._single === null) return false;
-        const v = this._single.deref();
-        if (v !== undefined) {
-          if (v === obj) {
-            this._single = null;
-            return true;
-          } else {
-            return false;
-          }
-        } else {
-          this._single = null;
-          return false;
-        }
-      }
-      case TAG_ARRAY: {
-        const arr = this._array!;
-        let found = false;
-        let count = 0;
-        let living: WeakRef<IAdaptiveObject> | null = null;
-        for (let i = 0; i < arr.length; i++) {
-          const slot = arr[i];
-          if (slot !== null) {
-            const v = slot.deref();
-            if (v !== undefined) {
-              if (v === obj) {
-                arr[i] = null;
-                found = true;
-              } else {
-                count++;
-                living = slot;
-              }
-            } else {
-              arr[i] = null;
-            }
-          }
-        }
-        if (count === 0) {
-          this._tag = TAG_SINGLE_OR_ARRAY;
-          this._single = null;
-          this._array = null;
-        } else if (count === 1) {
-          this._tag = TAG_SINGLE_OR_ARRAY;
-          this._single = living;
-          this._array = null;
-        }
-        return found;
-      }
-      default: {
-        const set = this._set!;
-        if (set.delete(obj.weak)) {
-          this._setOps += 1;
-          this.cleanup();
+    const data = this._data;
+    if (data === null) return false;
+    if (data instanceof WeakRef) {
+      const v = data.deref();
+      if (v !== undefined) {
+        if (v === obj) {
+          this._data = null;
           return true;
-        } else {
-          return false;
+        }
+        return false;
+      }
+      this._data = null;
+      return false;
+    }
+    if (Array.isArray(data)) {
+      const arr = data;
+      let found = false;
+      let count = 0;
+      let living: WeakRef<IAdaptiveObject> | null = null;
+      for (let i = 0; i < arr.length; i++) {
+        const slot = arr[i];
+        if (slot !== null) {
+          const v = slot.deref();
+          if (v !== undefined) {
+            if (v === obj) {
+              arr[i] = null;
+              found = true;
+            } else {
+              count++;
+              living = slot;
+            }
+          } else {
+            arr[i] = null;
+          }
         }
       }
+      if (count === 0) {
+        this._data = null;
+      } else if (count === 1) {
+        this._data = living;
+      }
+      return found;
     }
+    // set mode
+    const set = data.set;
+    if (set.delete(obj.weak)) {
+      data.ops += 1;
+      this.cleanup();
+      return true;
+    }
+    return false;
   }
 
   /** Returns all currently living entries from the set and clears it. */
   consume(output: OutputBuffer): number {
     // F# original: `lock x (fun () -> ...)`. Removed.
+    const data = this._data;
     let cnt = 0;
-    switch (this._tag) {
-      case TAG_SINGLE_OR_ARRAY: {
-        if (this._single !== null) {
-          const v = this._single.deref();
-          if (v !== undefined) {
-            if (output.value.length < 1) resizeOutputBuffer(output, 1);
-            output.value[0] = v;
-            cnt = 1;
-          } else {
-            cnt = 0;
-          }
-        }
-        break;
+    if (data === null) {
+      // nothing
+    } else if (data instanceof WeakRef) {
+      const v = data.deref();
+      if (v !== undefined) {
+        if (output.value.length < 1) resizeOutputBuffer(output, 1);
+        output.value[0] = v;
+        cnt = 1;
       }
-      case TAG_ARRAY: {
-        const arr = this._array!;
-        let oi = 0;
-        for (let i = 0; i < arr.length; i++) {
-          const r = arr[i];
-          if (r !== null) {
-            const v = r.deref();
-            if (v !== undefined) {
-              if (oi >= output.value.length) {
-                resizeOutputBuffer(output, oi << 2);
-              }
-              output.value[oi] = v;
-              oi++;
-            }
-          }
-        }
-        cnt = oi;
-        break;
-      }
-      default: {
-        const set = this._set!;
-        let oi = 0;
-        for (const r of set) {
+    } else if (Array.isArray(data)) {
+      let oi = 0;
+      for (let i = 0; i < data.length; i++) {
+        const r = data[i];
+        if (r !== null) {
           const v = r.deref();
           if (v !== undefined) {
             if (oi >= output.value.length) {
@@ -278,25 +247,29 @@ export class WeakOutputSet implements IWeakOutputSet {
             oi++;
           }
         }
-        cnt = oi;
-        break;
       }
+      cnt = oi;
+    } else {
+      let oi = 0;
+      for (const r of data.set) {
+        const v = r.deref();
+        if (v !== undefined) {
+          if (oi >= output.value.length) {
+            resizeOutputBuffer(output, oi << 2);
+          }
+          output.value[oi] = v;
+          oi++;
+        }
+      }
+      cnt = oi;
     }
-    this._tag = TAG_SINGLE_OR_ARRAY;
-    this._single = null;
-    this._array = null;
-    this._set = null;
-    this._setOps = 0;
+    this._data = null;
     return cnt;
   }
 
   clear(): void {
     // F# original: `lock x (fun () -> ...)`. Removed.
-    this._tag = TAG_SINGLE_OR_ARRAY;
-    this._single = null;
-    this._array = null;
-    this._set = null;
-    this._setOps = 0;
+    this._data = null;
   }
 
   /**
@@ -305,10 +278,7 @@ export class WeakOutputSet implements IWeakOutputSet {
    */
   get isEmpty(): boolean {
     // F# original: `lock x (fun () -> ...)`. Removed.
-    if (this._tag === TAG_SINGLE_OR_ARRAY) {
-      return this._single === null;
-    }
-    return false;
+    return this._data === null;
   }
 }
 
