@@ -15,7 +15,7 @@ export const enum SetCmp {
 }
 
 /** Monoid for HashSetDelta — combine via reference-counted union. */
-export function hashSetDeltaMonoid<T>(): Monoid<HashSetDelta<T>> {
+function hashSetDeltaMonoidImpl<T>(): Monoid<HashSetDelta<T>> {
   return {
     mempty: HashSetDelta.empty<T>(),
     mappend: (l, r) => l.combine(r),
@@ -375,6 +375,10 @@ export class CountingHashSet<T> implements Iterable<T> {
 
   /** Traceable instance — full ref-counting semantics. */
   static trace<T>(): Traceable<CountingHashSet<T>, HashSetDelta<T>> {
+    return _countingTrace as unknown as Traceable<CountingHashSet<T>, HashSetDelta<T>>;
+  }
+  /** @internal builds the (stateless) record — called once. */
+  static traceImpl<T>(): Traceable<CountingHashSet<T>, HashSetDelta<T>> {
     return {
       tmonoid: hashSetDeltaMonoid<T>(),
       tempty: CountingHashSet.empty<T>(),
@@ -390,6 +394,10 @@ export class CountingHashSet<T> implements Iterable<T> {
 
   /** Traceable instance ignoring reference counts (set semantics). */
   static traceNoRefCount<T>(): Traceable<CountingHashSet<T>, HashSetDelta<T>> {
+    return _countingTraceNoRef as unknown as Traceable<CountingHashSet<T>, HashSetDelta<T>>;
+  }
+  /** @internal builds the (stateless) record — called once. */
+  static traceNoRefCountImpl<T>(): Traceable<CountingHashSet<T>, HashSetDelta<T>> {
     return {
       tmonoid: hashSetDeltaMonoid<T>(),
       tempty: CountingHashSet.empty<T>(),
@@ -454,7 +462,7 @@ export const CountingHashSetOps = {
 };
 
 /** F# Traceable<HashSet<T>, HashSetDelta<T>> instance. */
-export function hashSetTrace<T>(): Traceable<HashSet<T>, HashSetDelta<T>> {
+function hashSetTraceImpl<T>(): Traceable<HashSet<T>, HashSetDelta<T>> {
   return {
     tmonoid: hashSetDeltaMonoid<T>(),
     tempty: HashSet.empty<T>(),
@@ -494,3 +502,21 @@ export function hashSetTrace<T>(): Traceable<HashSet<T>, HashSetDelta<T>> {
 // to import it. Provide a builder rather than a single value to keep
 // generic instantiation per-call.
 export {}; // ensure module shape stable
+
+// Stateless records — ONE shared instance each (generics erased at
+// runtime; fresh closure records per reader/history were a measured
+// heap item at scene scale).
+const _hashSetDeltaMonoid = hashSetDeltaMonoidImpl<unknown>();
+const _countingTrace = CountingHashSet.traceImpl<unknown>();
+const _countingTraceNoRef = CountingHashSet.traceNoRefCountImpl<unknown>();
+const _hashSetTrace = hashSetTraceImpl<unknown>();
+
+/** Monoid over `HashSetDelta<T>` (combine). */
+export function hashSetDeltaMonoid<T>(): Monoid<HashSetDelta<T>> {
+  return _hashSetDeltaMonoid as unknown as Monoid<HashSetDelta<T>>;
+}
+
+/** Traceable instance for plain `HashSet<T>`. */
+export function hashSetTrace<T>(): Traceable<HashSet<T>, HashSetDelta<T>> {
+  return _hashSetTrace as unknown as Traceable<HashSet<T>, HashSetDelta<T>>;
+}

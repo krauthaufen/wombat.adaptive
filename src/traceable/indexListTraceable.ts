@@ -7,8 +7,7 @@ import {
 } from "../datastructures/indexListDelta.js";
 import type { Monoid, Traceable } from "./traceable.js";
 
-/** Monoid for `IndexListDelta<T>` (combine = MapExt union right-biased). */
-export function indexListDeltaMonoid<T>(): Monoid<IndexListDelta<T>> {
+function indexListDeltaMonoidImpl<T>(): Monoid<IndexListDelta<T>> {
   return {
     misEmpty: (d) => d.isEmpty,
     mempty: IndexListDelta.empty<T>(),
@@ -16,8 +15,7 @@ export function indexListDeltaMonoid<T>(): Monoid<IndexListDelta<T>> {
   };
 }
 
-/** Traceable instance for `IndexList<T>` driven by `IndexListDelta<T>`. */
-export function indexListTrace<T>(): Traceable<
+function indexListTraceImpl<T>(): Traceable<
   IndexList<T>,
   IndexListDelta<T>
 > {
@@ -32,4 +30,18 @@ export function indexListTrace<T>(): Traceable<
     tsize: (d) => d.count,
     tprune: undefined,
   };
+}
+
+// Stateless records — ONE shared instance each (see hashMapTraceable).
+const _indexListDeltaMonoid = indexListDeltaMonoidImpl<unknown>();
+const _indexListTrace = indexListTraceImpl<unknown>();
+
+/** Monoid for `IndexListDelta<T>` (combine = MapExt union right-biased). */
+export function indexListDeltaMonoid<T>(): Monoid<IndexListDelta<T>> {
+  return _indexListDeltaMonoid as unknown as Monoid<IndexListDelta<T>>;
+}
+
+/** Traceable instance for `IndexList<T>` driven by `IndexListDelta<T>`. */
+export function indexListTrace<T>(): Traceable<IndexList<T>, IndexListDelta<T>> {
+  return _indexListTrace as unknown as Traceable<IndexList<T>, IndexListDelta<T>>;
 }

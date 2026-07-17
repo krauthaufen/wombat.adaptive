@@ -2,9 +2,12 @@
 // objects by a path of reference-identity keys (typically:
 // `[source, ...otherSources, fn]`).
 //
-// Each level is a `WeakMap<object, MemoTrie>`; the leaf holds a
-// `WeakRef<object>` to the cached value. Lookup walks the path; insert
-// nests as needed. Any null/dead level falls through to a miss.
+// Each interior level is a `WeakMap<object, MemoTrie | WeakRef>`; the
+// LAST key of a path maps directly to the value's `WeakRef` — no
+// terminal node, no terminal WeakMap (at scene scale the terminal
+// nodes were half the trie's heap). When a shorter path terminates at
+// a key that a longer path passes through, the entry upgrades to a
+// node carrying both a `leaf` and children.
 //
 // Callers are responsible for strongly retaining the path keys for the
 // duration of the lookup; the trie itself only holds them weakly. The
@@ -13,7 +16,7 @@
 // next lookup.
 
 export class MemoTrie {
-  private readonly next: WeakMap<object, MemoTrie> = new WeakMap();
+  private readonly next: WeakMap<object, MemoTrie | WeakRef<object>> = new WeakMap();
   private leaf: WeakRef<object> | undefined = undefined;
 
   /**
@@ -23,30 +26,61 @@ export class MemoTrie {
    * treated as a miss.
    */
   lookup(keys: ReadonlyArray<object>): object | undefined {
-    let node: MemoTrie | undefined = this;
+    if (keys.length === 0) return this.leaf?.deref();
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    let node: MemoTrie = this;
+    const last = keys.length - 1;
     for (let i = 0; i < keys.length; i++) {
-      node = node.next.get(keys[i]!);
-      if (node === undefined) return undefined;
+      const e = node.next.get(keys[i]!);
+      if (e === undefined) return undefined;
+      if (e instanceof WeakRef) {
+        // inlined terminal — a hit only if this is the path's last key
+        return i === last ? e.deref() : undefined;
+      }
+      if (i === last) return e.leaf?.deref();
+      node = e;
     }
-    return node.leaf?.deref();
+    return undefined;
   }
 
   /**
    * Inserts `value` at the path `keys`, creating intermediate nodes as
-   * needed. The value is held weakly via `WeakRef`.
+   * needed. The value is held weakly via `WeakRef`. An empty path
+   * stores at the root's own leaf.
    */
   insert(keys: ReadonlyArray<object>, value: object): void {
-    let node: MemoTrie = this;
-    for (let i = 0; i < keys.length; i++) {
-      const k = keys[i]!;
-      let n = node.next.get(k);
-      if (n === undefined) {
-        n = new MemoTrie();
-        node.next.set(k, n);
-      }
-      node = n;
+    if (keys.length === 0) {
+      this.leaf = new WeakRef(value);
+      return;
     }
-    node.leaf = new WeakRef(value);
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    let node: MemoTrie = this;
+    const last = keys.length - 1;
+    for (let i = 0; i < last; i++) {
+      const k = keys[i]!;
+      const e = node.next.get(k);
+      if (e === undefined) {
+        const n = new MemoTrie();
+        node.next.set(k, n);
+        node = n;
+      } else if (e instanceof WeakRef) {
+        // upgrade an inlined terminal into an interior node keeping
+        // its value as the node's own leaf
+        const n = new MemoTrie();
+        n.leaf = e;
+        node.next.set(k, n);
+        node = n;
+      } else {
+        node = e;
+      }
+    }
+    const k = keys[last]!;
+    const e = node.next.get(k);
+    if (e === undefined || e instanceof WeakRef) {
+      node.next.set(k, new WeakRef(value));
+    } else {
+      e.leaf = new WeakRef(value);
+    }
   }
 }
 

@@ -48,6 +48,11 @@ import type { Traceable } from "../traceable/traceable.js";
 import type { AdaptiveReduction } from "../adaptiveValue/adaptiveReduction.js";
 import * as Reductions from "../adaptiveValue/adaptiveReduction.js";
 
+// Shared tag predicates — one closure per module, not per reader.
+const _tagNotInput = (tag: unknown): boolean => tag !== "Input";
+const _tagNotInnerAvalTag = (tag: unknown): boolean => tag !== INNER_AVAL_TAG;
+const _tagIsInnerTag = (tag: unknown): boolean => tag === INNER_TAG;
+
 /**
  * An adaptive reader for `aset` that allows pulling operations and
  * exposes its current state.
@@ -323,7 +328,7 @@ class CollectReader<A, B>
   private readonly _reader: IHashSetReader<A>;
   private readonly _cache: Cache<A, IHashSetReader<B>>;
   constructor(input: aset<A>, mapping: (a: A) => aset<B>) {
-    super(hashSetDeltaMonoid<B>(), (tag) => tag === INNER_TAG);
+    super(hashSetDeltaMonoid<B>(), _tagIsInnerTag);
     this._reader = input.getReader();
     this._cache = new Cache<A, IHashSetReader<B>>((value) => {
       const r = mapping(value).getReader();
@@ -393,7 +398,7 @@ class UnionReader<T>
   private readonly _reader: IHashSetReader<aset<T>>;
   private readonly _cache: Cache<aset<T>, IHashSetReader<T>>;
   constructor(input: aset<aset<T>>) {
-    super(hashSetDeltaMonoid<T>(), (tag) => tag === INNER_TAG);
+    super(hashSetDeltaMonoid<T>(), _tagIsInnerTag);
     this._reader = input.getReader();
     this._cache = new Cache<aset<T>, IHashSetReader<T>>((inner) => {
       const r = inner.getReader();
@@ -620,7 +625,7 @@ class FlattenAReader<T>
   private readonly _reader: IHashSetReader<aval<T>>;
   private readonly _cache: Map<aval<T>, T> = new Map();
   constructor(input: aset<aval<T>>) {
-    super(hashSetDeltaMonoid<T>(), (tag) => tag !== "Input");
+    super(hashSetDeltaMonoid<T>(), _tagNotInput);
     this._reader = input.getReader();
     this._reader.tag = "Input";
   }
@@ -669,7 +674,7 @@ class MapAReader<A, B>
   // For each inner aval, [refcount, last value]
   private readonly _cache: Map<aval<B>, { count: number; value: B }> = new Map();
   constructor(input: aset<A>, mapping: (a: A) => aval<B>) {
-    super(hashSetDeltaMonoid<B>(), (tag) => tag !== INNER_AVAL_TAG);
+    super(hashSetDeltaMonoid<B>(), _tagNotInnerAvalTag);
     this._reader = input.getReader();
     this._reader.tag = INNER_AVAL_TAG;
     this._mapping = new Cache<A, aval<B>>(mapping);
@@ -729,7 +734,7 @@ class ChooseAReader<A, B>
     { count: number; value: B | undefined }
   > = new Map();
   constructor(input: aset<A>, f: (a: A) => aval<B | undefined>) {
-    super(hashSetDeltaMonoid<B>(), (tag) => tag !== INNER_AVAL_TAG);
+    super(hashSetDeltaMonoid<B>(), _tagNotInnerAvalTag);
     this._reader = input.getReader();
     this._reader.tag = INNER_AVAL_TAG;
     this._f = new Cache<A, aval<B | undefined>>(f);

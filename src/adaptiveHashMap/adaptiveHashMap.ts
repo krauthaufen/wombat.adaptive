@@ -59,6 +59,9 @@ import {
 import type { AdaptiveReduction } from "../adaptiveValue/adaptiveReduction.js";
 import * as Reductions from "../adaptiveValue/adaptiveReduction.js";
 
+// Shared tag predicates — one closure per module, not per reader.
+const _tagNotInput = (tag: unknown): boolean => tag !== "input";
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -478,7 +481,7 @@ class MapAReader<K, A, B>
   private readonly _cache: Cache<readonly [K, A], aval<B>>;
   private _targets: MultiSetMap<aval<B>, K> = MultiSetMap.empty<aval<B>, K>();
   constructor(input: amap<K, A>, mapping: (k: K, a: A) => aval<B>) {
-    super({ mempty: HashMapDelta.empty<K, B>() }, (tag) => tag !== "input");
+    super({ mempty: HashMapDelta.empty<K, B>() }, _tagNotInput);
     this._reader = input.getReader();
     (this._reader as unknown as IAdaptiveObject).tag = "input";
     this._mapping = mapping;
@@ -553,7 +556,7 @@ class ChooseAReader<K, A, B>
     input: amap<K, A>,
     mapping: (k: K, a: A) => aval<B | undefined>,
   ) {
-    super({ mempty: HashMapDelta.empty<K, B>() }, (tag) => tag !== "input");
+    super({ mempty: HashMapDelta.empty<K, B>() }, _tagNotInput);
     this._reader = input.getReader();
     (this._reader as unknown as IAdaptiveObject).tag = "input";
     this._mapping = mapping;

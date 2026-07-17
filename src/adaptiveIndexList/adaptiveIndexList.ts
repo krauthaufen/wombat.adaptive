@@ -50,6 +50,11 @@ import {
 import type { AdaptiveReduction } from "../adaptiveValue/adaptiveReduction.js";
 import * as Reductions from "../adaptiveValue/adaptiveReduction.js";
 
+// Shared tag predicates — one closure per module, not per reader.
+const _tagNotInput = (tag: unknown): boolean => tag !== "input";
+const _tagIsInnerreader = (tag: unknown): boolean => tag === "InnerReader";
+const _tagIsMultireader = (tag: unknown): boolean => tag === "MultiReader";
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -456,7 +461,7 @@ class MapAReader<A, B>
     Index
   >();
   constructor(input: alist<A>, mapping: (i: Index, a: A) => aval<B>) {
-    super({ mempty: IndexListDelta.empty<B>() }, (tag) => tag !== "input");
+    super({ mempty: IndexListDelta.empty<B>() }, _tagNotInput);
     this._reader = input.getReader();
     (this._reader as unknown as IAdaptiveObject).tag = "input";
     this._mapping = mapping;
@@ -520,7 +525,7 @@ class ChooseAReader<A, B>
     Index
   >();
   constructor(input: alist<A>, mapping: (i: Index, a: A) => aval<B | undefined>) {
-    super({ mempty: IndexListDelta.empty<B>() }, (tag) => tag !== "input");
+    super({ mempty: IndexListDelta.empty<B>() }, _tagNotInput);
     this._reader = input.getReader();
     (this._reader as unknown as IAdaptiveObject).tag = "input";
     this._mapping = mapping;
@@ -626,7 +631,7 @@ class ConcatReader<A> extends AbstractDirtyReader<
   constructor(inputs: IndexList<alist<A>>) {
     super(
       { mempty: IndexListDelta.empty<A>() },
-      (tag) => tag === "InnerReader",
+      _tagIsInnerreader,
     );
     const mapping = new IndexMapping<[Index, Index]>(indexPairCmp);
     const arr: IndexedReader<A>[] = [];
@@ -761,7 +766,7 @@ class CollectReader<A, B> extends AbstractDirtyReader<
   constructor(input: alist<A>, mapping: (i: Index, a: A) => alist<B>) {
     super(
       { mempty: IndexListDelta.empty<B>() },
-      (tag) => tag === "MultiReader",
+      _tagIsMultireader,
     );
     this._input = input.getReader();
     this._mapping = mapping;
