@@ -3049,30 +3049,90 @@ export class HashSet<K> implements Iterable<K> {
 // Public HashMap<K, V>
 // ---------------------------------------------------------------------------
 
+// Small-map threshold: flat maps at or below this size skip the trie
+// entirely (scene-templates M2 — a scene holds tens of thousands of
+// 1..3-entry maps). Above it, or on any operation without a flat fast
+// path, the trie is built lazily via the `_root` getter and the map
+// behaves EXACTLY as before — the flat form is an optimization of
+// representation, never of semantics.
+const SMALL_MAP_MAX = 16;
+
 export class HashMap<K, V> implements Iterable<[K, V]> {
   /** @internal */
   readonly _cmp: IEqualityComparer<K>;
-  /** @internal */
-  readonly _root: SetNode<K> | null;
+  /** Trie root cache; `undefined` = flat-backed, not yet built. @internal */
+  private _rootCache: SetNode<K> | null | undefined;
+  // Flat small representation: ONE interleaved array
+  // [h0, k0, v0, h1, k1, v1, ...] in insertion order — a 2-entry map
+  // is wrapper + one array, cheaper than any trie shape. Invariants:
+  // keys unique; values never `undefined` (the node ops treat
+  // undefined ambiguously, so flat paths bail to the trie for them);
+  // ≤ SMALL_MAP_MAX entries.
+  private _f: unknown[] | null = null;
 
   /** @internal */
   constructor(cmp: IEqualityComparer<K>, root: SetNode<K> | null) {
     this._cmp = cmp;
-    this._root = root;
+    this._rootCache = root;
+  }
+
+  private static smallOf<K, V>(
+    cmp: IEqualityComparer<K>,
+    f: unknown[],
+  ): HashMap<K, V> {
+    const m = new HashMap<K, V>(cmp, null);
+    m._rootCache = undefined;
+    m._f = f;
+    return m;
+  }
+
+  /** True while this map is served by the flat representation. */
+  private get isFlat(): boolean {
+    return this._rootCache === undefined;
+  }
+
+  /** @internal — lazily builds the canonical trie from the flat form. */
+  get _root(): SetNode<K> | null {
+    let r = this._rootCache;
+    if (r === undefined) {
+      let n: SetNode<K> | null = null;
+      const f = this._f!;
+      for (let i = 0; i < f.length; i += 3) {
+        n = MapNodeOps.add(this._cmp, f[i] as number, f[i + 1] as K, f[i + 2] as V, n);
+      }
+      this._rootCache = r = n;
+    }
+    return r;
+  }
+
+  /** Index into `_f` (multiple of 3), or -1. */
+  private flatIndex(hash: number, key: K): number {
+    const f = this._f!;
+    for (let i = 0; i < f.length; i += 3) {
+      if (f[i] === hash && this._cmp.equals(f[i + 1] as K, key)) return i;
+    }
+    return -1;
   }
 
   get count(): number {
+    if (this.isFlat) return this._f!.length / 3;
     return size(this._root);
   }
   get isEmpty(): boolean {
+    if (this.isFlat) return this._f!.length === 0;
     return this._root === null;
   }
 
   containsKey(key: K): boolean {
+    if (this.isFlat) return this.flatIndex(hashKey(this._cmp, key), key) >= 0;
     return MapNodeOps.containsKey<K, V>(this._cmp, hashKey(this._cmp, key), key, this._root);
   }
 
   tryFind(key: K): V | undefined {
+    if (this.isFlat) {
+      const i = this.flatIndex(hashKey(this._cmp, key), key);
+      return i >= 0 ? (this._f![i + 2] as V) : undefined;
+    }
     return MapNodeOps.tryFind<K, V>(this._cmp, hashKey(this._cmp, key), key, this._root);
   }
   tryFindV(key: K): V | undefined {
@@ -3087,6 +3147,23 @@ export class HashMap<K, V> implements Iterable<[K, V]> {
   }
 
   add(key: K, value: V): HashMap<K, V> {
+    if (this.isFlat && value !== undefined) {
+      const h = hashKey(this._cmp, key);
+      const i = this.flatIndex(h, key);
+      const f = this._f!;
+      if (i >= 0) {
+        const nf = f.slice();
+        nf[i + 2] = value;
+        return HashMap.smallOf<K, V>(this._cmp, nf);
+      }
+      if (f.length < SMALL_MAP_MAX * 3) {
+        const nf = f.slice();
+        nf.push(h, key, value);
+        return HashMap.smallOf<K, V>(this._cmp, nf);
+      }
+      // crosses the threshold — fall through onto the trie (built once
+      // via the getter, then extended).
+    }
     return new HashMap<K, V>(
       this._cmp,
       MapNodeOps.add(this._cmp, hashKey(this._cmp, key), key, value, this._root),
@@ -3094,6 +3171,13 @@ export class HashMap<K, V> implements Iterable<[K, V]> {
   }
 
   remove(key: K): HashMap<K, V> {
+    if (this.isFlat) {
+      const i = this.flatIndex(hashKey(this._cmp, key), key);
+      if (i < 0) return this;
+      const nf = this._f!.slice();
+      nf.splice(i, 3);
+      return HashMap.smallOf<K, V>(this._cmp, nf);
+    }
     const [v, root] = MapNodeOps.tryRemove<K, V>(
       this._cmp,
       hashKey(this._cmp, key),
@@ -3105,6 +3189,14 @@ export class HashMap<K, V> implements Iterable<[K, V]> {
   }
 
   tryRemove(key: K): { value: V; rest: HashMap<K, V> } | undefined {
+    if (this.isFlat) {
+      const i = this.flatIndex(hashKey(this._cmp, key), key);
+      if (i < 0) return undefined;
+      const value = this._f![i + 2] as V;
+      const nf = this._f!.slice();
+      nf.splice(i, 3);
+      return { value, rest: HashMap.smallOf<K, V>(this._cmp, nf) };
+    }
     const [v, root] = MapNodeOps.tryRemove<K, V>(
       this._cmp,
       hashKey(this._cmp, key),
@@ -3145,25 +3237,75 @@ export class HashMap<K, V> implements Iterable<[K, V]> {
   }
 
   iter(action: (k: K, v: V) => void): void {
+    if (this.isFlat) {
+      const f = this._f!;
+      for (let i = 0; i < f.length; i += 3) action(f[i + 1] as K, f[i + 2] as V);
+      return;
+    }
     MapNodeOps.iter(action, this._root);
   }
   fold<S>(folder: (s: S, k: K, v: V) => S, state: S): S {
+    if (this.isFlat) {
+      const f = this._f!;
+      let acc = state;
+      for (let i = 0; i < f.length; i += 3) acc = folder(acc, f[i + 1] as K, f[i + 2] as V);
+      return acc;
+    }
     return MapNodeOps.fold(folder, state, this._root);
   }
   exists(predicate: (k: K, v: V) => boolean): boolean {
+    if (this.isFlat) {
+      const f = this._f!;
+      for (let i = 0; i < f.length; i += 3) if (predicate(f[i + 1] as K, f[i + 2] as V)) return true;
+      return false;
+    }
     return MapNodeOps.exists(predicate, this._root);
   }
   forall(predicate: (k: K, v: V) => boolean): boolean {
+    if (this.isFlat) {
+      const f = this._f!;
+      for (let i = 0; i < f.length; i += 3) if (!predicate(f[i + 1] as K, f[i + 2] as V)) return false;
+      return true;
+    }
     return MapNodeOps.forall(predicate, this._root);
   }
 
   map<U>(mapping: (k: K, v: V) => U): HashMap<K, U> {
+    if (this.isFlat) {
+      const f = this._f!;
+      const nf = f.slice();
+      let flatOk = true;
+      for (let i = 0; i < f.length; i += 3) {
+        const u = mapping(f[i + 1] as K, f[i + 2] as V);
+        if (u === undefined) { flatOk = false; break; }
+        nf[i + 2] = u;
+      }
+      if (flatOk) return HashMap.smallOf<K, U>(this._cmp, nf);
+      // undefined values can't ride the flat form — use the trie path.
+    }
     return new HashMap<K, U>(this._cmp, MapNodeOps.map(mapping, this._root));
   }
   choose<U>(mapping: (k: K, v: V) => U | undefined): HashMap<K, U> {
+    if (this.isFlat) {
+      const f = this._f!;
+      const nf: unknown[] = [];
+      for (let i = 0; i < f.length; i += 3) {
+        const u = mapping(f[i + 1] as K, f[i + 2] as V);
+        if (u !== undefined) nf.push(f[i], f[i + 1], u);
+      }
+      return HashMap.smallOf<K, U>(this._cmp, nf);
+    }
     return new HashMap<K, U>(this._cmp, MapNodeOps.choose(mapping, this._root));
   }
   filter(predicate: (k: K, v: V) => boolean): HashMap<K, V> {
+    if (this.isFlat) {
+      const f = this._f!;
+      const nf: unknown[] = [];
+      for (let i = 0; i < f.length; i += 3) {
+        if (predicate(f[i + 1] as K, f[i + 2] as V)) nf.push(f[i], f[i + 1], f[i + 2]);
+      }
+      return HashMap.smallOf<K, V>(this._cmp, nf);
+    }
     return new HashMap<K, V>(this._cmp, MapNodeOps.filter(predicate, this._root));
   }
 
@@ -3288,6 +3430,12 @@ export class HashMap<K, V> implements Iterable<[K, V]> {
   }
 
   toList(): Array<[K, V]> {
+    if (this.isFlat) {
+      const f = this._f!;
+      const out: Array<[K, V]> = new Array(f.length / 3);
+      for (let i = 0; i < f.length; i += 3) out[i / 3] = [f[i + 1] as K, f[i + 2] as V];
+      return out;
+    }
     return MapNodeOps.toList<K, V>([], this._root);
   }
   toArray(): Array<[K, V]> {
@@ -3297,6 +3445,12 @@ export class HashMap<K, V> implements Iterable<[K, V]> {
     return this.toList().map((kv) => kv[0]);
   }
   toValueArray(): V[] {
+    if (this.isFlat) {
+      const f = this._f!;
+      const out: V[] = new Array(f.length / 3);
+      for (let i = 0; i < f.length; i += 3) out[i / 3] = f[i + 2] as V;
+      return out;
+    }
     return MapNodeOps.toValueList<K, V>([], this._root);
   }
   toKeyList(): K[] {
@@ -3316,6 +3470,11 @@ export class HashMap<K, V> implements Iterable<[K, V]> {
   }
 
   *[Symbol.iterator](): IterableIterator<[K, V]> {
+    if (this.isFlat) {
+      const f = this._f!;
+      for (let i = 0; i < f.length; i += 3) yield [f[i + 1] as K, f[i + 2] as V];
+      return;
+    }
     const stack: Array<SetNode<K> | null> = [this._root];
     while (stack.length > 0) {
       const node = stack.pop()!;
@@ -3350,8 +3509,9 @@ export class HashMap<K, V> implements Iterable<[K, V]> {
     return SetNodeOps.hash(0, this._root);
   }
 
+  private static readonly _emptyFlat: unknown[] = [];
   static empty<K, V>(cmp?: IEqualityComparer<K>): HashMap<K, V> {
-    return new HashMap<K, V>(cmp ?? comparerFor<K>(), null);
+    return HashMap.smallOf<K, V>(cmp ?? comparerFor<K>(), HashMap._emptyFlat);
   }
   static single<K, V>(key: K, value: V, cmp?: IEqualityComparer<K>): HashMap<K, V> {
     return HashMap.empty<K, V>(cmp).add(key, value);
