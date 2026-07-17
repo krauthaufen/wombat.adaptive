@@ -835,11 +835,29 @@ function closeOverConstants<R>(
   };
 }
 
+function anyConstant(vals: ReadonlyArray<aval<unknown>>): boolean {
+  for (const v of vals) if (v.isConstant) return true;
+  return false;
+}
+
 function mapInternal<R>(
   vals: ReadonlyArray<aval<unknown>>,
   f: (...vs: unknown[]) => R,
 ): aval<R> {
   if (vals.length === 0) return ConstantVal.lazy(() => f());
+
+  // Fast path — no constant inputs (the overwhelmingly common case).
+  // Skips the partition arrays AND both wrapper closures: at 10k+
+  // adaptive scene leaves those allocations were a top heap item
+  // (~3 arrays + 2 closures + their contexts per `map` call).
+  if (!anyConstant(vals)) {
+    switch (vals.length) {
+      case 1: return new MapVal<unknown, R>(f as (a: unknown) => R, vals[0]!);
+      case 2: return new Map2Val<unknown, unknown, R>(f as (a: unknown, b: unknown) => R, vals[0]!, vals[1]!);
+      case 3: return new Map3Val<unknown, unknown, unknown, R>(f as (a: unknown, b: unknown, c: unknown) => R, vals[0]!, vals[1]!, vals[2]!);
+      default: return new MapNVal<R>([...vals], f);
+    }
+  }
 
   const { allConstant, constantValues, dynamicVals, dynamicIndices } =
     partitionConstants(vals);
@@ -879,6 +897,16 @@ function bindInternal<R>(
   f: (...vs: unknown[]) => aval<R>,
 ): aval<R> {
   if (vals.length === 0) return f();
+
+  // Fast path — mirrors mapInternal (no partition/wrapper allocations).
+  if (!anyConstant(vals)) {
+    switch (vals.length) {
+      case 1: return new BindVal<unknown, R>(f as (a: unknown) => aval<R>, vals[0]!);
+      case 2: return new Bind2Val<unknown, unknown, R>(f as (a: unknown, b: unknown) => aval<R>, vals[0]!, vals[1]!);
+      case 3: return new Bind3Val<unknown, unknown, unknown, R>(f as (a: unknown, b: unknown, c: unknown) => aval<R>, vals[0]!, vals[1]!, vals[2]!);
+      default: break; // fall through to the generic path below
+    }
+  }
 
   const { allConstant, constantValues, dynamicVals, dynamicIndices } =
     partitionConstants(vals);
@@ -934,14 +962,20 @@ export function delay<T>(create: () => T): aval<T> {
 }
 
 export function map<T, R>(value: aval<T>, f: (a: T) => R): aval<R> {
-  return mapInternal([value], (v) => f(v as T));
+  // Direct construction — no per-call wrapper closure or input array.
+  // The single-input map is by far the hottest combinator: at 10k+
+  // adaptive scene leaves the `(v) => f(v)` cast wrapper and `[value]`
+  // were a top heap item.
+  if (value.isConstant) return ConstantVal.lazy(() => f(force(value)));
+  return new MapVal<T, R>(f, value);
 }
 
 export function bind<T, R>(
   value: aval<T>,
   f: (a: T) => aval<R>,
 ): aval<R> {
-  return bindInternal([value], (v) => f(v as T));
+  if (value.isConstant) return f(force(value));
+  return new BindVal<T, R>(f, value);
 }
 
 export function mapNonAdaptive<T, R>(
