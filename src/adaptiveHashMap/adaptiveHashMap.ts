@@ -472,21 +472,41 @@ class Choose2VReader<K, A, B, T> extends AbstractReader<HashMapDelta<K, T>> {
   }
 }
 
+/**
+ * Cache key for the per-key readers (`mapA` / `chooseA`): F# keys these
+ * caches on the tuple `(k, v)` with structural equality. A bare JS array
+ * would hash by identity, so a remove / replace never found its entry.
+ */
+class KeyValue<K, A> {
+  constructor(readonly key: K, readonly value: A) {}
+  equals(o: unknown): boolean {
+    return (
+      o instanceof KeyValue &&
+      defaultEquals(this.key, o.key) &&
+      defaultEquals(this.value, o.value)
+    );
+  }
+  getHashCode(): number {
+    const a = defaultHash(this.key);
+    return ((a ^ defaultHash(this.value)) + 0x9e3779b9 + (a << 6) + (a >>> 2)) | 0;
+  }
+}
+
 /** Reader for `mapA`. */
 class MapAReader<K, A, B>
   extends AbstractDirtyReader<aval<B>, HashMapDelta<K, B>>
 {
   private readonly _reader: IHashMapReader<K, A>;
   private readonly _mapping: (k: K, a: A) => aval<B>;
-  private readonly _cache: Cache<readonly [K, A], aval<B>>;
+  private readonly _cache: Cache<KeyValue<K, A>, aval<B>>;
   private _targets: MultiSetMap<aval<B>, K> = MultiSetMap.empty<aval<B>, K>();
   constructor(input: amap<K, A>, mapping: (k: K, a: A) => aval<B>) {
     super({ mempty: HashMapDelta.empty<K, B>() }, _tagNotInput);
     this._reader = input.getReader();
     (this._reader as unknown as IAdaptiveObject).tag = "input";
     this._mapping = mapping;
-    this._cache = new Cache<readonly [K, A], aval<B>>((arg) =>
-      this._mapping(arg[0], arg[1]),
+    this._cache = new Cache<KeyValue<K, A>, aval<B>>((arg) =>
+      this._mapping(arg.key, arg.value),
     );
   }
   override compute(tok: AdaptiveToken, dirty: Set<aval<B>>): HashMapDelta<K, B> {
@@ -501,21 +521,21 @@ class MapAReader<K, A, B>
       if (op.tag === "Set") {
         const o = old.tryFind(i);
         if (o !== undefined) {
-          const revoked = this._cache.tryRevoke([i, o]);
+          const revoked = this._cache.tryRevoke(new KeyValue(i, o));
           if (revoked !== undefined) {
             const rem = MultiSetMap.remove(revoked, i, this._targets);
             this._targets = rem.result;
             if (rem.wasLast) revoked.outputs.remove(this);
           }
         }
-        const k = this._cache.invoke([i, op.value]);
+        const k = this._cache.invoke(new KeyValue(i, op.value));
         const v = k.getValue(tok);
         this._targets = MultiSetMap.add(k, i, this._targets);
         changes = changes.add(i, ElementSet(v));
       } else {
         const v = old.tryFind(i);
         if (v !== undefined) {
-          const revoked = this._cache.tryRevoke([i, v]);
+          const revoked = this._cache.tryRevoke(new KeyValue(i, v));
           if (revoked !== undefined) {
             const rem = MultiSetMap.remove(revoked, i, this._targets);
             this._targets = rem.result;
@@ -549,7 +569,7 @@ class ChooseAReader<K, A, B>
   private readonly _reader: IHashMapReader<K, A>;
   private readonly _mapping: (k: K, a: A) => aval<B | undefined>;
   private readonly _keys = new Set<K>();
-  private readonly _cache: Cache<readonly [K, A], aval<B | undefined>>;
+  private readonly _cache: Cache<KeyValue<K, A>, aval<B | undefined>>;
   private _targets: MultiSetMap<aval<B | undefined>, K> =
     MultiSetMap.empty<aval<B | undefined>, K>();
   constructor(
@@ -560,8 +580,8 @@ class ChooseAReader<K, A, B>
     this._reader = input.getReader();
     (this._reader as unknown as IAdaptiveObject).tag = "input";
     this._mapping = mapping;
-    this._cache = new Cache<readonly [K, A], aval<B | undefined>>((arg) =>
-      this._mapping(arg[0], arg[1]),
+    this._cache = new Cache<KeyValue<K, A>, aval<B | undefined>>((arg) =>
+      this._mapping(arg.key, arg.value),
     );
   }
   override compute(
@@ -575,14 +595,14 @@ class ChooseAReader<K, A, B>
       if (op.tag === "Set") {
         const o = old.tryFind(i);
         if (o !== undefined) {
-          const revoked = this._cache.tryRevoke([i, o]);
+          const revoked = this._cache.tryRevoke(new KeyValue(i, o));
           if (revoked !== undefined) {
             const rem = MultiSetMap.remove(revoked, i, this._targets);
             this._targets = rem.result;
             if (rem.wasLast) revoked.outputs.remove(this);
           }
         }
-        const k = this._cache.invoke([i, op.value]);
+        const k = this._cache.invoke(new KeyValue(i, op.value));
         const v = k.getValue(tok);
         this._targets = MultiSetMap.add(k, i, this._targets);
         if (v !== undefined) {
@@ -594,7 +614,7 @@ class ChooseAReader<K, A, B>
       } else {
         const v = old.tryFind(i);
         if (v !== undefined) {
-          const revoked = this._cache.tryRevoke([i, v]);
+          const revoked = this._cache.tryRevoke(new KeyValue(i, v));
           if (revoked !== undefined) {
             const rem = MultiSetMap.remove(revoked, i, this._targets);
             this._targets = rem.result;

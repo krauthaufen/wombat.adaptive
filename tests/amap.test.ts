@@ -212,3 +212,40 @@ describe("[AMap] reduceByA group", () => {
     expect(AVal.force(res)).toBe(2);
   });
 });
+
+describe("[AMap] mapA / chooseA remove and replace", () => {
+  // The per-key cache is keyed on (key, value); a removed or replaced
+  // key must find its cached aval again to drop it.
+  const entries = (m: HashMap<string, string>) =>
+    [...m].map(([k, v]) => `${k}=${v}`).sort().join(",");
+
+  test("mapA", () => {
+    const k = cval(1);
+    const m = cmap<string, number>();
+    transact(() => { m.set("a", 1); m.set("b", 2); });
+    const res = AMap.toAVal(AMap.mapA((key: string, v: number) => AVal.map(k, (x) => key + v * x), m));
+    expect(entries(AVal.force(res))).toBe("a=a1,b=b2");
+    transact(() => { m.remove("a"); });
+    expect(entries(AVal.force(res))).toBe("b=b2");
+    transact(() => { m.set("b", 3); });
+    expect(entries(AVal.force(res))).toBe("b=b3");
+    transact(() => { k.value = 10; m.set("c", 4); });
+    expect(entries(AVal.force(res))).toBe("b=b30,c=c40");
+  });
+
+  test("chooseA", () => {
+    const k = cval(1);
+    const m = cmap<string, number>();
+    transact(() => { m.set("a", 1); m.set("b", 2); });
+    const res = AMap.toAVal(
+      AMap.chooseA((key: string, v: number) => AVal.map(k, (x) => (v * x > 1 ? key + v * x : undefined)), m),
+    );
+    expect(entries(AVal.force(res))).toBe("b=b2");
+    transact(() => { m.remove("b"); });
+    expect(entries(AVal.force(res))).toBe("");
+    transact(() => { m.set("a", 5); });
+    expect(entries(AVal.force(res))).toBe("a=a5");
+    transact(() => { k.value = 0; });
+    expect(entries(AVal.force(res))).toBe("");
+  });
+});
