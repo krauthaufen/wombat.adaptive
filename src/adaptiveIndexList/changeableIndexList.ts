@@ -7,6 +7,7 @@ import {
   indexZero,
 } from "../datastructures/index.js";
 import { IndexList } from "../datastructures/indexList.js";
+import { defaultEquals } from "../datastructures/equality.js";
 import {
   IndexListDelta,
   IndexListDeltaExt,
@@ -215,9 +216,14 @@ export class ChangeableIndexList<T> extends AbstractAlist<T> implements Iterable
     return this.history.performUnsafe(target, delta);
   }
 
-  /** Sets state from an array (rebuilds an IndexList). */
+  /**
+   * Sets state from an array, diffing by value (`defaultEquals`): kept
+   * elements keep their Index, so removing one of many is one change.
+   */
   updateToArray(values: T[]): boolean {
-    return this.updateTo(IndexList.ofArray(values));
+    const delta = IndexListDeltaExt.computeDeltaToArray(defaultEquals, this.history.state, values);
+    if (delta.isEmpty) return false;
+    return this.history.perform(delta);
   }
 
   override getReader(): IIndexListReader<T> {

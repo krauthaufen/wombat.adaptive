@@ -267,10 +267,21 @@ export const IndexListDeltaExt = {
     if (src.count === 0) {
       return IndexListDeltaExt.computeDelta(src, IndexList.ofArray(dst));
     }
-    // Both non-empty: run Myers, then translate Add/Remove/Equal ops
-    // into IndexListDelta operations using the source Indices.
+    // Both non-empty: run Myers on what lies between the common ends, then
+    // translate Add/Remove/Equal ops into IndexListDelta operations using
+    // the source Indices. Past `MAX_EDITS` the middle is replaced in place
+    // by position instead.
     const srcArr = src.toArrayIndexed();
-    const ops = myersDiff(equals, srcArr, dst);
+    const m = srcArr.length;
+    const n = dst.length;
+    let head = 0;
+    while (head < m && head < n && equals(srcArr[head]![1], dst[head]!)) head += 1;
+    let tail = 0;
+    while (tail < m - head && tail < n - head && equals(srcArr[m - 1 - tail]![1], dst[n - 1 - tail]!)) tail += 1;
+    const middle =
+      myersDiff(equals, srcArr.slice(head, m - tail), dst.slice(head, n - tail), MAX_EDITS) ??
+      [...new Array<DeltaOp>(m - head - tail).fill(DeltaOp.Remove), ...new Array<DeltaOp>(n - head - tail).fill(DeltaOp.Add)];
+    const ops = [...new Array<DeltaOp>(head).fill(DeltaOp.Equal), ...middle, ...new Array<DeltaOp>(tail).fill(DeltaOp.Equal)];
     let si = 0;
     let di = 0;
     let delta = IndexListDelta.empty<T>();
@@ -378,14 +389,17 @@ function myersDiff<A, B>(
   equals: (a: A, b: B) => boolean,
   src: ReadonlyArray<readonly [unknown, A]>,
   dst: ReadonlyArray<B>,
-): DeltaOp[] {
+  maxD: number,
+): DeltaOp[] | null {
   const m = src.length;
   const n = dst.length;
   const max = m + n;
   const v = new Array<number>(2 * max + 1).fill(0);
+  // Step d reads only the diagonals within ±d: the trace keeps that window.
   const trace: number[][] = [];
   for (let d = 0; d <= max; d++) {
-    trace.push(v.slice());
+    if (d > maxD) return null;
+    trace.push(v.slice(max - d, max + d + 1));
     for (let k = -d; k <= d; k += 2) {
       let x: number;
       if (k === -d || (k !== d && (v[k - 1 + max] ?? 0) < (v[k + 1 + max] ?? 0))) {
@@ -408,6 +422,9 @@ function myersDiff<A, B>(
   return [];
 }
 
+/** Edits beyond which a diff costs more than replacing by position. */
+const MAX_EDITS = 512;
+
 function reconstructPath(
   trace: number[][],
   finalD: number,
@@ -422,12 +439,12 @@ function reconstructPath(
     const v = trace[d]!;
     const k = x - y;
     let prevK: number;
-    if (k === -d || (k !== d && (v[k - 1 + max] ?? 0) < (v[k + 1 + max] ?? 0))) {
+    if (k === -d || (k !== d && (v[k - 1 + d] ?? 0) < (v[k + 1 + d] ?? 0))) {
       prevK = k + 1;
     } else {
       prevK = k - 1;
     }
-    const prevX = v[prevK + max] ?? 0;
+    const prevX = v[prevK + d] ?? 0;
     const prevY = prevX - prevK;
     while (x > prevX && y > prevY) {
       ops.push(DeltaOp.Equal);
