@@ -55,4 +55,14 @@ describe("clist.updateToArray", () => {
     const ys = [...xs.slice(0, 10), ...xs.slice(10, 2990).map((x) => -x - 1), ...xs.slice(2990)];
     expect(run(xs, ys)).toEqual({ content: ys, changes: 2980 });
   });
+
+  it("compares by the given equality", () => {
+    const pairs = (n: number) => Array.from({ length: n }, (_, i) => [i, i]);
+    const c = clist(pairs(100));
+    const r = c.getReader();
+    r.getChanges(AdaptiveToken.top);
+    const same = (a: number[], b: number[]) => a[0] === b[0] && a[1] === b[1];
+    transact(() => c.updateToArray(pairs(100).slice(1), same));
+    expect(r.getChanges(AdaptiveToken.top).count).toBe(1);
+  });
 });

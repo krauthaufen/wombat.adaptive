@@ -217,11 +217,12 @@ export class ChangeableIndexList<T> extends AbstractAlist<T> implements Iterable
   }
 
   /**
-   * Sets state from an array, diffing by value (`defaultEquals`): kept
-   * elements keep their Index, so removing one of many is one change.
+   * Sets state from an array, diffing by value (`equals`, `defaultEquals`
+   * if none): kept elements keep their Index, so removing one of many is
+   * one change.
    */
-  updateToArray(values: T[]): boolean {
-    const delta = IndexListDeltaExt.computeDeltaToArray(defaultEquals, this.history.state, values);
+  updateToArray(values: T[], equals: (a: T, b: T) => boolean = defaultEquals): boolean {
+    const delta = IndexListDeltaExt.computeDeltaToArray(equals, this.history.state, values);
     if (delta.isEmpty) return false;
     return this.history.perform(delta);
   }
