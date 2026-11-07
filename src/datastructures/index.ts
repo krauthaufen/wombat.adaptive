@@ -47,6 +47,13 @@ function u64(x: bigint): bigint {
 // lazily and cached on the node itself.
 let _indexNodeIdCounter = 0;
 
+/**
+ * Bumped when the root's tag changes (a relabel that wraps through the
+ * root): every node's cached `num` is then stale. A relabel that does
+ * not touch the root refreshes the `num` of the nodes it relabels.
+ */
+let _rootEpoch = 0;
+
 class IndexNode {
   /** Root-node for this cycle. */
   root!: IndexNode;
@@ -58,6 +65,15 @@ class IndexNode {
   tag: bigint = 0n;
   /** Reference count for tracking disposal. */
   refCount = 1;
+  /**
+   * `Number(key)`, cached: compares are by far the hottest Index
+   * operation and the exact key is a BigInt subtraction and modulo.
+   * Rounding to a double is monotone, so differing `num`s order two
+   * nodes; only equal ones fall back to the exact key.
+   */
+  num = 0;
+  /** The `_rootEpoch` `num` was computed in. */
+  numEpoch = -1;
   /**
    * Stable identity hash (independent of `tag`, which can change via
    * `relabel`). Lazily assigned on first read.
@@ -74,6 +90,11 @@ class IndexNode {
   /** Sort key relative to root. */
   get key(): bigint {
     return u64(this.tag - this.root.tag);
+  }
+
+  refreshNum(): void {
+    this.num = Number(u64(this.tag - this.root.tag));
+    this.numEpoch = _rootEpoch;
   }
 
   /**
@@ -108,10 +129,14 @@ class IndexNode {
 
     const step = space / (1n + cnt);
     let nextTag = u64(start.tag + step);
+    let rootMoved = false;
     for (const n of all) {
       n.tag = nextTag;
       nextTag = u64(nextTag + step);
+      if (n.root === n) rootMoved = true;
     }
+    if (rootMoved) _rootEpoch++;
+    else for (const n of all) n.refreshNum();
 
     return step;
   }
@@ -132,6 +157,7 @@ class IndexNode {
     res.prev = this;
     res.next = next;
     res.tag = key;
+    res.refreshNum();
 
     next.prev = res;
     this.next = res;
@@ -154,7 +180,12 @@ class IndexNode {
 
   compareTo(o: IndexNode): number {
     if (this === o) return 0;
-    return this.key < o.key ? -1 : this.key > o.key ? 1 : 0;
+    if (this.numEpoch !== _rootEpoch) this.refreshNum();
+    if (o.numEpoch !== _rootEpoch) o.refreshNum();
+    const a = this.num, b = o.num;
+    if (a !== b) return a < b ? -1 : 1;
+    const ka = this.key, kb = o.key;
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
   }
 
   equals(o: IndexNode): boolean {
