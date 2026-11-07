@@ -207,12 +207,11 @@ describe("[plugin/behavioural] correctness", () => {
   });
 });
 
-describe("[plugin/behavioural] constant-source bypass", () => {
-  // When every aval input to a combinator is `isConstant`, __memo
-  // skips the trie and runs the callback directly. The result is
-  // semantically constant; identity-sharing across call sites is
-  // not the memo trie's job for this case (downstream consumers
-  // dedup at the pool layer when they care).
+describe("[plugin/behavioural] constant sources", () => {
+  // Constant-source combinators go through the trie like any other
+  // (a992a86: downstream caches key on the derived aval's identity).
+  // Sources key by REFERENCE, never by value: equal-valued distinct
+  // constants stay distinct, the same constant shares.
   test("two constant sources with identical value → distinct derived avals", () => {
     const a = constant(7);
     const b = constant(7);
@@ -223,24 +222,25 @@ describe("[plugin/behavioural] constant-source bypass", () => {
     expect(force(m2)).toBe(14);
   });
 
-  test("same constant source twice → still distinct derived (bypassed)", () => {
+  test("same constant source twice → shared derived", () => {
     const a = constant(7);
     const m1 = a.map(double);
     const m2 = a.map(double);
-    expect(m1).not.toBe(m2);
+    expect(m1).toBe(m2);
+    expect(force(m1)).toBe(14);
   });
 
-  test("reactive source still memoizes (bypass only triggers when ALL aval inputs are constant)", () => {
+  test("reactive source memoizes", () => {
     const av = cval(1);
     const m1 = av.map(double);
     const m2 = av.map(double);
     expect(m1).toBe(m2);
   });
 
-  // Same bypass policy applies to aset/alist/amap — `isConstant`
+  // Same reference keying applies to aset/alist/amap — `isConstant`
   // is duck-typed in __memo so all four collection kinds are
   // covered uniformly.
-  test("constant aset → bypass: distinct derived sets", () => {
+  test("equal-valued constant asets → distinct derived sets", () => {
     const s1 = setConstant<number>(() => HashSet.ofArray([1, 2, 3]));
     const s2 = setConstant<number>(() => HashSet.ofArray([1, 2, 3]));
     const m1 = s1.map(double);
