@@ -1721,22 +1721,49 @@ export function indexed<T>(list: alist<T>): alist<[Index, T]> {
   return mapi<T, [Index, T]>((i, v) => [i, v] as [Index, T], list);
 }
 
-export function concat<T>(lists: Iterable<alist<T>>): alist<T> {
-  const arr = IndexList.ofArray([...lists]);
-  if (arr.isEmpty) return empty<T>();
-  if (arr.forall((_i, l) => l.isConstant)) {
-    return constant(() => arr.collect((l) => force(l)));
+/**
+ * The direct inputs of a non-constant `concat` / `append` result. A
+ * reader of a concat of concats reads ONE flat ConcatReader over all
+ * their leaves (same order, same content): a chain of binary appends
+ * would otherwise stack a reader — and a delta remap — per level. The
+ * leaves are collected when a reader is created, so building a chain of
+ * n appends stays O(n).
+ */
+const _concatInputs = new WeakMap<object, readonly object[]>();
+
+function concatLeaves<T>(lists: readonly alist<T>[]): alist<T>[] {
+  const flat: alist<T>[] = [];
+  // explicit stack (in reverse) instead of recursion: chains can be deep
+  const stack: alist<T>[] = [];
+  for (let i = lists.length - 1; i >= 0; i--) stack.push(lists[i]!);
+  while (stack.length > 0) {
+    const l = stack.pop()!;
+    const inner = _concatInputs.get(l) as readonly alist<T>[] | undefined;
+    if (inner === undefined) flat.push(l);
+    else for (let i = inner.length - 1; i >= 0; i--) stack.push(inner[i]!);
   }
-  return ofReaderInternal<T>(() => new ConcatReader<T>(arr));
+  return flat;
+}
+
+function concatOf<T>(lists: readonly alist<T>[]): alist<T> {
+  if (lists.length === 0) return empty<T>();
+  if (lists.every((l) => l.isConstant)) {
+    return constant(() => IndexList.ofArray([...lists]).collect((l) => force(l)));
+  }
+  if (lists.length === 1) return lists[0]!;
+  const res = ofReaderInternal<T>(
+    () => new ConcatReader<T>(IndexList.ofArray(concatLeaves(lists))),
+  );
+  _concatInputs.set(res, lists as readonly object[]);
+  return res;
+}
+
+export function concat<T>(lists: Iterable<alist<T>>): alist<T> {
+  return concatOf([...lists]);
 }
 
 export function append<T>(l: alist<T>, r: alist<T>): alist<T> {
-  if (l.isConstant && r.isConstant) {
-    return constant(() => IndexList.append(force(l), force(r)));
-  }
-  return ofReaderInternal<T>(
-    () => new ConcatReader<T>(IndexList.ofArray([l, r])),
-  );
+  return concatOf([l, r]);
 }
 
 export function bind<A, B>(
