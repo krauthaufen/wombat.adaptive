@@ -15,7 +15,10 @@
 // MEMORY NOTE (scene-templates M2): the whole state lives in ONE
 // `_data` slot discriminated by runtime type —
 //   null                → empty
-//   WeakRef             → single output (the overwhelmingly common case)
+//   IAdaptiveObject     → single output (the overwhelmingly common case),
+//                         held STRONGLY: no WeakRef is allocated for it.
+//                         A dead single output lives until the next
+//                         consume (the input's next marking) or remove.
 //   Array<WeakRef|null> → up to ArrayCapacity outputs
 //   SetBox              → many outputs (Set + cleanup op counter)
 // A scene with 200k adaptive nodes carries 200k of these objects, so
@@ -41,37 +44,37 @@ class SetBox {
 
 type OutputData =
   | null
-  | WeakRef<IAdaptiveObject>
+  | IAdaptiveObject
   | (WeakRef<IAdaptiveObject> | null)[]
   | SetBox;
+
+/** The single-output state: a plain (strong) reference. */
+function isSingle(d: OutputData): d is IAdaptiveObject {
+  return d !== null && !Array.isArray(d) && !(d instanceof SetBox);
+}
 
 export class WeakOutputSet implements IWeakOutputSet {
   private _data: OutputData = null;
 
   private _add(obj: IAdaptiveObject): boolean {
-    const weakObj = obj.weak;
     const data = this._data;
     if (data === null) {
-      this._data = weakObj;
+      // The first output is held strongly: no WeakRef for the
+      // overwhelmingly common single-output node.
+      this._data = obj;
       return true;
     }
-    if (data instanceof WeakRef) {
-      if (data === weakObj) return false;
-      const existing = data.deref();
-      if (existing !== undefined) {
-        if (existing === obj) return false;
-        const arr: (WeakRef<IAdaptiveObject> | null)[] = new Array(
-          ArrayCapacity,
-        ).fill(null);
-        arr[0] = data;
-        arr[1] = weakObj;
-        this._data = arr;
-        return true;
-      }
-      // Existing single is dead — replace it.
-      this._data = weakObj;
+    if (isSingle(data)) {
+      if (data === obj) return false;
+      const arr: (WeakRef<IAdaptiveObject> | null)[] = new Array(
+        ArrayCapacity,
+      ).fill(null);
+      arr[0] = data.weak;
+      arr[1] = obj.weak;
+      this._data = arr;
       return true;
     }
+    const weakObj = obj.weak;
     if (Array.isArray(data)) {
       const arr = data;
       let freeIndex = -1;
@@ -125,18 +128,16 @@ export class WeakOutputSet implements IWeakOutputSet {
     return set.size > before;
   }
 
-  /** Used internally to get rid of leaking WeakReferences. */
+  /** Used internally to get rid of leaking WeakReferences. Drops the dead
+   *  entries in place once the ops since the last sweep exceed the set's
+   *  size (at least 100): amortised O(1) per op. (A sweep every 100 ops
+   *  made filling a set with n outputs O(n²/100).) */
   private cleanup(): void {
     // F# original: `lock x (fun () -> ...)`. JS single-threaded, no lock.
     const data = this._data;
-    if (data instanceof SetBox && data.ops > 100) {
+    if (data instanceof SetBox && data.ops > 100 && data.ops > data.set.size) {
       data.ops = 0;
-      const buf: OutputBuffer = { value: new Array(100).fill(undefined) };
-      const cnt = this.consume(buf);
-      for (let i = 0; i < cnt; i++) {
-        const o = buf.value[i];
-        if (o !== undefined) this._add(o);
-      }
+      for (const r of data.set) if (r.deref() === undefined) data.set.delete(r);
     }
   }
 
@@ -168,16 +169,11 @@ export class WeakOutputSet implements IWeakOutputSet {
     // F# original: `lock x (fun () -> ...)`. Removed.
     const data = this._data;
     if (data === null) return false;
-    if (data instanceof WeakRef) {
-      const v = data.deref();
-      if (v !== undefined) {
-        if (v === obj) {
-          this._data = null;
-          return true;
-        }
-        return false;
+    if (isSingle(data)) {
+      if (data === obj) {
+        this._data = null;
+        return true;
       }
-      this._data = null;
       return false;
     }
     if (Array.isArray(data)) {
@@ -205,7 +201,7 @@ export class WeakOutputSet implements IWeakOutputSet {
       if (count === 0) {
         this._data = null;
       } else if (count === 1) {
-        this._data = living;
+        this._data = living!.deref() ?? null;
       }
       return found;
     }
@@ -226,13 +222,10 @@ export class WeakOutputSet implements IWeakOutputSet {
     let cnt = 0;
     if (data === null) {
       // nothing
-    } else if (data instanceof WeakRef) {
-      const v = data.deref();
-      if (v !== undefined) {
-        if (output.value.length < 1) resizeOutputBuffer(output, 1);
-        output.value[0] = v;
-        cnt = 1;
-      }
+    } else if (isSingle(data)) {
+      if (output.value.length < 1) resizeOutputBuffer(output, 1);
+      output.value[0] = data;
+      cnt = 1;
     } else if (Array.isArray(data)) {
       let oi = 0;
       for (let i = 0; i < data.length; i++) {

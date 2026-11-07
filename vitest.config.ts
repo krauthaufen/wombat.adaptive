@@ -8,5 +8,8 @@ export default defineConfig({
     // via `vitest.transformed.config.ts` (npm run test:transformed).
     exclude: ["node_modules/**", "dist/**", "tests/plugin/transformed/**"],
     globals: false,
+    // `gc()` for the weak-reference tests (they skip without it).
+    pool: "forks",
+    poolOptions: { forks: { execArgv: ["--expose-gc"] } },
   },
 });

@@ -429,7 +429,10 @@ function casterLambda<A, B>(): (a: A) => B {
 class MapVal<T1, T2> extends AbstractVal<T2> {
   private readonly _mapping: (a: T1) => T2;
   private readonly _input: aval<T1>;
-  private _cache: { input: T1; output: T2 } | undefined = undefined;
+  // The last input and output as fields (no cache object per compute).
+  private _hasCache = false;
+  private _in: T1 | undefined = undefined;
+  private _out: T2 | undefined = undefined;
 
   constructor(mapping: (a: T1) => T2, input: aval<T1>) {
     super();
@@ -439,11 +442,11 @@ class MapVal<T1, T2> extends AbstractVal<T2> {
 
   override compute(token: AdaptiveToken): T2 {
     const i = this._input.getValue(token);
-    if (this._cache !== undefined && Object.is(this._cache.input, i)) {
-      return this._cache.output;
-    }
+    if (this._hasCache && Object.is(this._in, i)) return this._out as T2;
     const o = this._mapping(i);
-    this._cache = { input: i, output: o };
+    this._hasCache = true;
+    this._in = i;
+    this._out = o;
     return o;
   }
 }
@@ -456,7 +459,10 @@ class Map2Val<T1, T2, T3> extends AbstractVal<T3> {
   private readonly _mapping: (a: T1, b: T2) => T3;
   private readonly _a: aval<T1>;
   private readonly _b: aval<T2>;
-  private _cache: { a: T1; b: T2; out: T3 } | undefined = undefined;
+  private _hasCache = false;
+  private _ca: T1 | undefined = undefined;
+  private _cb: T2 | undefined = undefined;
+  private _out: T3 | undefined = undefined;
 
   constructor(mapping: (a: T1, b: T2) => T3, a: aval<T1>, b: aval<T2>) {
     super();
@@ -468,15 +474,14 @@ class Map2Val<T1, T2, T3> extends AbstractVal<T3> {
   override compute(token: AdaptiveToken): T3 {
     const a = this._a.getValue(token);
     const b = this._b.getValue(token);
-    if (
-      this._cache !== undefined &&
-      Object.is(this._cache.a, a) &&
-      Object.is(this._cache.b, b)
-    ) {
-      return this._cache.out;
+    if (this._hasCache && Object.is(this._ca, a) && Object.is(this._cb, b)) {
+      return this._out as T3;
     }
     const c = this._mapping(a, b);
-    this._cache = { a, b, out: c };
+    this._hasCache = true;
+    this._ca = a;
+    this._cb = b;
+    this._out = c;
     return c;
   }
 }
@@ -490,9 +495,11 @@ class Map3Val<T1, T2, T3, T4> extends AbstractVal<T4> {
   private readonly _a: aval<T1>;
   private readonly _b: aval<T2>;
   private readonly _c: aval<T3>;
-  private _cache:
-    | { a: T1; b: T2; c: T3; out: T4 }
-    | undefined = undefined;
+  private _hasCache = false;
+  private _ca: T1 | undefined = undefined;
+  private _cb: T2 | undefined = undefined;
+  private _cc: T3 | undefined = undefined;
+  private _out: T4 | undefined = undefined;
 
   constructor(
     mapping: (a: T1, b: T2, c: T3) => T4,
@@ -512,15 +519,19 @@ class Map3Val<T1, T2, T3, T4> extends AbstractVal<T4> {
     const b = this._b.getValue(token);
     const c = this._c.getValue(token);
     if (
-      this._cache !== undefined &&
-      Object.is(this._cache.a, a) &&
-      Object.is(this._cache.b, b) &&
-      Object.is(this._cache.c, c)
+      this._hasCache &&
+      Object.is(this._ca, a) &&
+      Object.is(this._cb, b) &&
+      Object.is(this._cc, c)
     ) {
-      return this._cache.out;
+      return this._out as T4;
     }
     const d = this._mapping(a, b, c);
-    this._cache = { a, b, c, out: d };
+    this._hasCache = true;
+    this._ca = a;
+    this._cb = b;
+    this._cc = c;
+    this._out = d;
     return d;
   }
 }
@@ -532,7 +543,8 @@ class Map3Val<T1, T2, T3, T4> extends AbstractVal<T4> {
 class MapNVal<R> extends AbstractVal<R> {
   private readonly _inputs: aval<unknown>[];
   private readonly _mapping: (...vs: unknown[]) => R;
-  private _cache: { inputs: unknown[]; output: R } | undefined = undefined;
+  private _inputsCache: unknown[] | undefined = undefined;
+  private _out: R | undefined = undefined;
 
   constructor(inputs: aval<unknown>[], mapping: (...vs: unknown[]) => R) {
     super();
@@ -542,18 +554,20 @@ class MapNVal<R> extends AbstractVal<R> {
 
   override compute(token: AdaptiveToken): R {
     const current = this._inputs.map((v) => v.getValue(token));
-    if (this._cache !== undefined && this._cache.inputs.length === current.length) {
+    const cached = this._inputsCache;
+    if (cached !== undefined && cached.length === current.length) {
       let allSame = true;
       for (let i = 0; i < current.length; i++) {
-        if (!Object.is(this._cache.inputs[i], current[i])) {
+        if (!Object.is(cached[i], current[i])) {
           allSame = false;
           break;
         }
       }
-      if (allSame) return this._cache.output;
+      if (allSame) return this._out as R;
     }
     const out = this._mapping(...current);
-    this._cache = { inputs: current, output: out };
+    this._inputsCache = current;
+    this._out = out;
     return out;
   }
 }
