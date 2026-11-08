@@ -42,11 +42,12 @@ import { AdaptiveToken } from "../core/adaptiveToken.js";
 import { DecoratorObject } from "../core/decoratorObject.js";
 import {
   getRunningTransaction,
+  LevelChangedException,
   markOutdated,
 } from "../core/transaction.js";
 import type { IDisposable } from "../core/callbacks.js";
 import type { IAdaptiveObject } from "../core/types.js";
-import { shallowHash } from "../datastructures/equality.js";
+import { defaultEquals, shallowHash } from "../datastructures/equality.js";
 
 // ---------------------------------------------------------------------------
 // IAdaptiveValue interfaces
@@ -448,6 +449,58 @@ class MapVal<T1, T2> extends AbstractVal<T2> {
     this._in = i;
     this._out = o;
     return o;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MapCutVal<T1, T2> — a map that propagates only real changes
+// ---------------------------------------------------------------------------
+
+/**
+ * `f` of its input, forwarding a change only when the value changed: when
+ * a transaction marks it, it evaluates (`mark`, as the engine allows) and
+ * stops the marking when the new value equals the last one, so its outputs
+ * are not marked. One object, like `MapVal`.
+ */
+class MapCutVal<T1, T2> extends AbstractVal<T2> {
+  private readonly _mapping: (a: T1) => T2;
+  private readonly _input: aval<T1>;
+  private readonly _equals: (a: T2, b: T2) => boolean;
+  private _hasCache = false;
+  private _out: T2 | undefined = undefined;
+
+  constructor(
+    mapping: (a: T1) => T2,
+    input: aval<T1>,
+    equals: (a: T2, b: T2) => boolean,
+  ) {
+    super();
+    this._mapping = mapping;
+    this._input = input;
+    this._equals = equals;
+  }
+
+  override compute(token: AdaptiveToken): T2 {
+    const o = this._mapping(this._input.getValue(token));
+    this._hasCache = true;
+    this._out = o;
+    return o;
+  }
+
+  override mark(): boolean {
+    if (!this._hasCache) return true;
+    const last = this._out as T2;
+    try {
+      this.getValue(AdaptiveToken.top);
+    } catch (e) {
+      // The transaction marks it again (a level changed): compare with
+      // the value its outputs saw. Any other failure is raised where the
+      // value is read.
+      this._out = last;
+      if (e instanceof LevelChangedException) throw e;
+      return true;
+    }
+    return !this._equals(last, this._out as T2);
   }
 }
 
@@ -984,6 +1037,20 @@ export function map<T, R>(value: aval<T>, f: (a: T) => R): aval<R> {
   return new MapVal<T, R>(f, value);
 }
 
+/**
+ * `f` of `value`, propagating a change only when the result changed
+ * (`equals`, by default `defaultEquals`): readers of an unchanged result
+ * are not marked.
+ */
+export function mapCut<T, R>(
+  value: aval<T>,
+  f: (a: T) => R,
+  equals: (a: R, b: R) => boolean = defaultEquals,
+): aval<R> {
+  if (value.isConstant) return ConstantVal.lazy(() => f(force(value)));
+  return new MapCutVal<T, R>(f, value, equals);
+}
+
 export function bind<T, R>(
   value: aval<T>,
   f: (a: T) => aval<R>,
@@ -1160,6 +1227,7 @@ export const AVal = {
   custom,
   cast,
   map,
+  mapCut,
   bind,
   mapNonAdaptive,
   zip,

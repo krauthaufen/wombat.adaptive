@@ -46,6 +46,7 @@ export {
   delay as avalDelay,
   custom as avalCustom,
   map as avalMap,
+  mapCut as avalMapCut,
   bind as avalBind,
   mapNonAdaptive as avalMapNonAdaptive,
   zip as avalZip,
